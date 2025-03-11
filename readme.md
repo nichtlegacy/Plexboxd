@@ -55,11 +55,13 @@ The `.env` file contains all the necessary configuration parameters:
 - `DISCORD_LOGGING_WEBHOOK_URL`: Webhook URL for sending logs to a Discord channel
 - `NOTIFY_CHANNEL_ID`: ID of the Discord channel where movie notifications will be sent
 - `GUILD_ID`: ID of your Discord server
+- `DISCORD_USER_ID`: Your Discord user ID to be notified when a movie is watched
 
 #### Plex Configuration
 - `PLEX_USERNAME`: Your Plex account username
 - `PLEX_TOKEN`: Your Plex authentication token
 - `PLEX_SERVER_URL`: URL of your Plex server (e.g., `http://192.168.1.100:32400`)
+- `PLEX_LIBRARY_NAME`: Name of your Plex movie library (e.g., `Movies`)
 
 #### Letterboxd Configuration
 - `LETTERBOXD_USERNAME`: Your Letterboxd username
