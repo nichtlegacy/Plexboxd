@@ -23,8 +23,10 @@ if platform.system() == "Windows":
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_LOGGING_WEBHOOK_URL = os.getenv("DISCORD_LOGGING_WEBHOOK_URL")
+DISCORD_USER_ID = os.getenv("DISCORD_USER_ID")
 PLEX_TOKEN = os.getenv("PLEX_TOKEN")
 PLEX_SERVER_URL = os.getenv("PLEX_SERVER_URL")
+PLEX_LIBRARY_NAME = os.getenv("PLEX_LIBRARY_NAME", "Movies")
 NOTIFY_CHANNEL_ID = int(os.getenv("NOTIFY_CHANNEL_ID"))
 GUILD_ID = int(os.getenv("GUILD_ID"))
 PLEX_USERNAME = os.getenv("PLEX_USERNAME")
@@ -172,7 +174,7 @@ class PlexDiscordBot(commands.Bot):
             return
         
         try:
-            recently_watched = self.plex_monitor.plex.library.section('Filme').search(
+            recently_watched = self.plex_monitor.plex.library.section(PLEX_LIBRARY_NAME).search(
                 unwatched=False,
                 libtype='movie'
             )
@@ -203,17 +205,19 @@ class PlexDiscordBot(commands.Bot):
                     
                     embed, file = await self.create_movie_embed(movie_details)
                     view = MovieButtons(movie_details['title'], movie_details['year'], movie_details['original_title'])
+                                        
+                    mention = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
                     
                     if file:
                         await self.notify_channel.send(
-                            content="<@400672307833733121>",
+                            content=mention,
                             embed=embed,
                             file=file,
                             view=view
                         )
                     else:
                         await self.notify_channel.send(
-                            content="<@400672307833733121>",
+                            content=mention,
                             embed=embed,
                             view=view
                         )
