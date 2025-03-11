@@ -1,0 +1,17 @@
+# Configuration and environment files
+.env
+
+# Log files and directories
+logs
+*.log
+
+# Data directories with generated or sensitive content
+data
+
+# Python-specific files and directories
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+.env.local

@@ -1,0 +1,17 @@
+# Core dependencies for Discord bot
+discord.py==2.5.0
+
+# Plex integration
+plexapi==4.15.16
+
+# HTTP requests
+aiohttp==3.11.13
+requests==2.32.3
+
+# Web scraping and automation
+selenium==4.27.1
+beautifulsoup4==4.13.3
+webdriver-manager==4.0.2
+
+# Environment variable management
+python-dotenv==1.0.1

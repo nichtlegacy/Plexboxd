@@ -1,0 +1,71 @@
+# src/views.py
+import discord
+from discord.ui import Select, View
+import logging
+from datetime import datetime
+import requests
+from letterboxd_integration import login, get_film_id_selenium, save_diary_entry
+
+logger = logging.getLogger('PlexBot')
+
+class MovieButtons(View):
+    """Interactive buttons for rating movies on Letterboxd."""
+    def __init__(self, movie_title: str, movie_year: int, original_title: str = None):
+        super().__init__(timeout=86400)
+        self.movie_title = movie_title
+        self.movie_year = movie_year
+        self.original_title = original_title or movie_title
+
+        rating_options = [
+            discord.SelectOption(label=f"{rating} ★", value=str(rating))
+            for rating in [round(i * 0.5, 1) for i in range(1, 11)]
+        ]
+        self.rating_select = Select(
+            custom_id="rate_movie",
+            placeholder="Rate this movie",
+            min_values=1,
+            max_values=1,
+            options=rating_options
+        )
+        self.rating_select.callback = self.rating_callback
+        self.add_item(self.rating_select)
+
+    async def rating_callback(self, interaction: discord.Interaction):
+        """Handle rating selection and update Letterboxd."""
+        rating = float(interaction.data['values'][0])
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+                "Referer": "https://letterboxd.com/",
+            })
+            csrf_token = login(session)
+            film_id = get_film_id_selenium(session, self.movie_title, self.movie_year, self.original_title)
+            if not film_id:
+                raise ValueError(f"Could not find film ID for '{self.original_title}' ({self.movie_year})")
+            save_diary_entry(session, csrf_token, film_id, rating)
+
+            self.rating_select.disabled = True
+            self.rating_select.placeholder = f"Rated {rating} ★ on {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            embed = discord.Embed(
+                title="Rating Successful!",
+                description=f"**{self.movie_title} ({self.movie_year})** rated **{rating} ★** on Letterboxd.",
+                color=discord.Color.green(),
+                timestamp=datetime.now()
+            )
+            embed.set_author(name="Letterboxd Rating", icon_url="https://i.imgur.com/0Yd2L4i.png")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.message.edit(view=self)
+
+        except Exception as e:
+            logger.error(f"Failed to rate movie on Letterboxd: {str(e)}")
+            embed = discord.Embed(
+                title="Rating Failed!",
+                description=f"Error: {str(e)[:200]}{'...' if len(str(e)) > 200 else ''}",
+                color=discord.Color.red(),
+                timestamp=datetime.now()
+            )
+            embed.set_author(name="Letterboxd Error", icon_url="https://i.imgur.com/0Yd2L4i.png")
+            await interaction.followup.send(embed=embed, ephemeral=True)
