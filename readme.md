@@ -23,7 +23,7 @@ Plexboxd is a Discord bot that automatically tracks movies watched on Plex and i
 
 1. Clone the repository
 ```bash
-git clone https://github.com/notlegacy/plexboxd.git
+git clone https://github.com/nichtlegacy/plexboxd.git
 cd plexboxd
 ```
 
