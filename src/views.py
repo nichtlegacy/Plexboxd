@@ -10,11 +10,12 @@ logger = logging.getLogger('PlexBot')
 
 class MovieButtons(View):
     """Interactive buttons for rating movies on Letterboxd."""
-    def __init__(self, movie_title: str, movie_year: int, original_title: str = None):
+    def __init__(self, movie_title: str, movie_year: int, original_title: str = None, last_viewed_at: str = None):
         super().__init__(timeout=86400)
         self.movie_title = movie_title
         self.movie_year = movie_year
         self.original_title = original_title or movie_title
+        self.last_viewed_at = last_viewed_at
 
         rating_options = [
             discord.SelectOption(label=f"{rating} ★", value=str(rating))
@@ -45,16 +46,20 @@ class MovieButtons(View):
             film_id = get_film_id_selenium(session, self.movie_title, self.movie_year, self.original_title)
             if not film_id:
                 raise ValueError(f"Could not find film ID for '{self.original_title}' ({self.movie_year})")
-            save_diary_entry(session, csrf_token, film_id, rating)
+            save_diary_entry(session, csrf_token, film_id, rating, viewing_date=self.last_viewed_at)
+
+            viewed_at_display = self.last_viewed_at
+            viewed_at_dt = datetime.fromisoformat(viewed_at_display) if viewed_at_display else datetime.now()
 
             self.rating_select.disabled = True
-            self.rating_select.placeholder = f"Rated {rating} ★ on {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+            self.rating_select.placeholder = f"Rated {rating} ★ for {viewed_at_dt.strftime('%d.%m.%Y %H:%M')}"
             embed = discord.Embed(
                 title="Rating Successful!",
                 description=f"**{self.movie_title} ({self.movie_year})** rated **{rating} ★** on Letterboxd.",
                 color=discord.Color.green(),
-                timestamp=datetime.now()
+                timestamp=viewed_at_dt
             )
+
             embed.set_author(name="Letterboxd Rating", icon_url="https://i.imgur.com/0Yd2L4i.png")
             await interaction.followup.send(embed=embed, ephemeral=True)
             await interaction.message.edit(view=self)

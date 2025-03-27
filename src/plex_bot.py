@@ -204,7 +204,12 @@ class PlexDiscordBot(commands.Bot):
                     (stored_last_viewed and (last_viewed - stored_last_viewed).total_seconds() > 7200)):
                     
                     embed, file = await self.create_movie_embed(movie_details)
-                    view = MovieButtons(movie_details['title'], movie_details['year'], movie_details['original_title'])
+                    view = MovieButtons(
+                        movie_details['title'],
+                        movie_details['year'],
+                        movie_details['original_title'],
+                        last_viewed_at=movie_details.get('last_viewed_at')
+                    )
                                         
                     mention = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
                     

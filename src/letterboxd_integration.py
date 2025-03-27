@@ -156,7 +156,12 @@ def get_film_id_selenium(session, film_name, film_year, original_title=None):
     finally:
         driver.quit()
 
-def save_diary_entry(session, csrf_token, film_id, rating):
+def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None):
+    if viewing_date:
+        viewing_date = datetime.fromisoformat(viewing_date)
+    else:
+        viewing_date = get_adjusted_date()
+
     """Save a diary entry with rating and adjusted date."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
@@ -166,7 +171,6 @@ def save_diary_entry(session, csrf_token, film_id, rating):
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
     }
-    viewing_date = get_adjusted_date()
     diary_data = {
         "json": "true",
         "__csrf": csrf_token,
