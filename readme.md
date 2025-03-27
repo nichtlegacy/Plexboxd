@@ -1,5 +1,13 @@
 # Plexboxd
 
+[![GitHub release](https://img.shields.io/github/release/nichtlegacy/plexboxd.svg?style=flat-square)](https://github.com/nichtlegacy/plexboxd/releases/latest)
+![Made with Python](https://img.shields.io/badge/Made%20with-Python-3776AB?style=flat-square&logo=python&logoColor=white)
+![Discord](https://img.shields.io/badge/Discord-Bot-5865F2?style=flat-square&logo=discord&logoColor=white)
+![Plex](https://img.shields.io/badge/Plex-Server-E5A00D?style=flat-square&logo=plex&logoColor=white)
+![Letterboxd](https://img.shields.io/badge/Letterboxd-Integration-00D735?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
+
+
 Plexboxd is a Discord bot that automatically tracks movies watched on Plex and integrates with Letterboxd to log and rate them. It monitors your Plex server for watched content and sends an embed with all necessary information to a Discord channel, allowing you to rate films directly from Discord - which then automatically adds them to your Letterboxd diary.
 
 ![Plexboxd Notification Example](https://i.imgur.com/Sm9RIqc.png)
