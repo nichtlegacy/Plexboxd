@@ -52,6 +52,103 @@ cp .env.example .env
 python src/plex_bot.py
 ```
 
+## Docker Support
+
+Plexboxd now supports running in a Docker container, making it easier to deploy and manage on any system that supports Docker. The official image is available on GitHub Container Registry (GHCR) at `ghcr.io/nichtlegacy/plexboxd:latest`.
+
+### Running with Docker
+
+You can run Plexboxd using Docker in two ways: via the `docker run` command or with a `docker-compose.yml` file (recommended for easier configuration and persistence).
+
+#### Prerequisites for Docker
+- Docker installed on your system ([Install Docker](https://docs.docker.com/get-docker/))
+- (Optional) Docker Compose installed for using `docker-compose.yml` ([Install Docker Compose](https://docs.docker.com/compose/install/))
+
+#### Option 1: Using `docker run`
+Pull the latest image and run it with your environment variables:
+
+```bash
+docker run -d \
+  --name plexboxd \
+  --restart unless-stopped \
+  -e DISCORD_TOKEN="your-discord-token" \
+  -e DISCORD_LOGGING_WEBHOOK_URL="your-webhook-url" \
+  -e DISCORD_USER_ID="your-user-id" \
+  -e PLEX_USERNAME="your-plex-username" \
+  -e PLEX_TOKEN="your-plex-token" \
+  -e PLEX_SERVER_URL="http://your-plex-server:32400" \
+  -e PLEX_LIBRARY_NAME="Movies" \
+  -e NOTIFY_CHANNEL_ID="your-channel-id" \
+  -e GUILD_ID="your-guild-id" \
+  -e LETTERBOXD_USERNAME="your-letterboxd-username" \
+  -e LETTERBOXD_PASSWORD="your-letterboxd-password" \
+  -e DATE_THRESHOLD_HOUR="7" \
+  -v /path/to/your/logs:/app/logs \
+  -v /path/to/your/data:/app/data \
+  ghcr.io/nichtlegacy/plexboxd:latest
+```
+
+Replace `/path/to/your/logs` and `/path/to/your/data` with actual paths on your host system (e.g., `/mnt/user/appdata/plexboxd/logs` and `/mnt/user/appdata/plexboxd/data`).
+
+#### Option 2: Using Docker Compose (Recommended)
+Using `docker-compose` simplifies configuration by allowing you to use a `.env` file and manage persistent volumes more easily. Below is an example `docker-compose.yml`:
+
+```yaml
+version: '3.8'
+
+services:
+  plexboxd:
+    image: ghcr.io/nichtlegacy/plexboxd:latest
+    container_name: plexboxd
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+```
+
+##### Steps to Use Docker Compose
+1. Save the above content in a file named `docker-compose.yml`.
+2. Create a `.env` file in the same directory with the following variables (see [Configuration](#configuration) for details):
+
+   ```bash
+   DISCORD_TOKEN=your-discord-token
+   DISCORD_LOGGING_WEBHOOK_URL=your-webhook-url
+   DISCORD_USER_ID=your-user-id
+   PLEX_USERNAME=your-plex-username
+   PLEX_TOKEN=your-plex-token
+   PLEX_SERVER_URL=http://your-plex-server:32400
+   PLEX_LIBRARY_NAME=Movies
+   NOTIFY_CHANNEL_ID=your-channel-id
+   GUILD_ID=your-guild-id
+   LETTERBOXD_USERNAME=your-letterboxd-username
+   LETTERBOXD_PASSWORD=your-letterboxd-password
+   DATE_THRESHOLD_HOUR=7
+   ```
+
+3. (Optional, but recommended) Create the `logs` and `data` directories for persistence:
+   ```bash
+   mkdir logs data
+   ```
+
+4. Start the container:
+   ```bash
+   docker-compose up -d
+   ```
+
+5. To stop it:
+   ```bash
+   docker-compose down
+   ```
+
+#### Persistent Volumes
+To ensure logs and data (like `movie_data.json`) persist across container restarts, map the following volumes:
+- **Logs**: Host path (e.g., `./logs`) to container path `/app/logs`
+- **Data**: Host path (e.g., `./data`) to container path `/app/data`
+
+These mappings are included in the `docker-compose.yml` example above. Adjust the host paths to suit your system (e.g., `/mnt/user/appdata/plexboxd/logs` on Unraid).
+
 ## Configuration
 
 ### Environment Variables
