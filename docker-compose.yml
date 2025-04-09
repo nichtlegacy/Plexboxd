@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  plexboxd:
+    image: ghcr.io/nichtlegacy/plexboxd:latest
+    container_name: plexboxd
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
