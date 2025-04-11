@@ -1,4 +1,3 @@
-# src/views.py
 import discord
 from discord.ui import Select, View
 import logging
@@ -11,7 +10,7 @@ logger = logging.getLogger('PlexBot')
 class MovieButtons(View):
     """Interactive buttons for rating movies on Letterboxd."""
     def __init__(self, movie_title: str, movie_year: int, original_title: str = None, last_viewed_at: str = None):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.movie_title = movie_title
         self.movie_year = movie_year
         self.original_title = original_title or movie_title
@@ -22,7 +21,7 @@ class MovieButtons(View):
             for rating in [round(i * 0.5, 1) for i in range(1, 11)]
         ]
         self.rating_select = Select(
-            custom_id="rate_movie",
+            custom_id=f"rate_movie_{movie_title}_{movie_year}_{last_viewed_at or 'latest'}",
             placeholder="Rate this movie",
             min_values=1,
             max_values=1,

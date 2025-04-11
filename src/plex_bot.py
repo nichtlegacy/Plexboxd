@@ -110,9 +110,13 @@ class PlexMonitor:
         return {}
 
     def save_movie_data(self):
-        """Save watched movie data to JSON file."""
-        with open(MOVIE_DATA_PATH, 'w') as f:
-            json.dump(self.watched_movies, f, indent=2)
+        """Save watched movie data to JSON file with proper error handling."""
+        try:
+            os.makedirs(os.path.dirname(MOVIE_DATA_PATH), exist_ok=True)
+            with open(MOVIE_DATA_PATH, 'w') as f:
+                json.dump(self.watched_movies, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save movie data: {str(e)}")
 
     def get_movie_details(self, movie) -> Optional[Dict]:
         """Extract relevant movie details from Plex."""
@@ -152,7 +156,6 @@ class PlexMonitor:
             return False
 
 class PlexDiscordBot(commands.Bot):
-    """Discord bot integrating Plex movie watching."""
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -165,6 +168,47 @@ class PlexDiscordBot(commands.Bot):
         if not await self.plex_monitor.initialize():
             logger.error("Bot startup aborted due to Plex connection failure")
             await self.close()
+
+    async def restore_views(self):
+        """Reattach views to notifications with message_id on startup."""
+        logger.info("Restoring views for notifications...")
+        if not self.notify_channel:
+            logger.error("Notify channel not initialized, cannot restore views")
+            return
+
+        for movie_key, movie_data in self.plex_monitor.watched_movies.items():
+            notification = movie_data.get('notification')
+            if not notification:
+                logger.debug(f"No notification data for {movie_data['title']} ({movie_data['year']}), skipping")
+                continue
+
+            message_id = notification.get('message_id')
+            channel_id = notification.get('channel_id')
+
+            if not (message_id and channel_id):
+                logger.warning(f"Missing message_id or channel_id for {movie_data['title']}, skipping")
+                continue
+
+            if str(channel_id) != str(NOTIFY_CHANNEL_ID):
+                logger.warning(f"Channel ID mismatch for {movie_data['title']}, skipping view restoration")
+                continue
+
+            try:
+                message = await self.notify_channel.fetch_message(int(message_id))
+                view = MovieButtons(
+                    movie_title=movie_data['title'],
+                    movie_year=movie_data['year'],
+                    original_title=movie_data.get('original_title', movie_data['title']),
+                    last_viewed_at=movie_data.get('last_viewed_at')
+                )
+                await message.edit(view=view)
+                logger.info(f"Restored view for {movie_data['title']} ({movie_data['year']})")
+            except discord.NotFound:
+                logger.warning(f"Message {message_id} for {movie_data['title']} not found, removing notification data")
+                movie_data.pop('notification', None)
+                self.plex_monitor.save_movie_data()
+            except Exception as e:
+                logger.error(f"Failed to restore view for {movie_data['title']}: {str(e)}")
 
     @tasks.loop(minutes=15)
     async def check_recently_watched(self):
@@ -210,22 +254,20 @@ class PlexDiscordBot(commands.Bot):
                         movie_details['original_title'],
                         last_viewed_at=movie_details.get('last_viewed_at')
                     )
-                                        
+                    
                     mention = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
                     
-                    if file:
-                        await self.notify_channel.send(
-                            content=mention,
-                            embed=embed,
-                            file=file,
-                            view=view
-                        )
-                    else:
-                        await self.notify_channel.send(
-                            content=mention,
-                            embed=embed,
-                            view=view
-                        )
+                    message = await self.notify_channel.send(
+                        content=mention,
+                        embed=embed,
+                        file=file,
+                        view=view
+                    )
+                    
+                    movie_details['notification'] = {
+                        'message_id': str(message.id),
+                        'channel_id': str(self.notify_channel.id)
+                    }
                     
                     self.plex_monitor.watched_movies[movie_key] = movie_details
                     self.plex_monitor.save_movie_data()
@@ -248,6 +290,7 @@ class PlexDiscordBot(commands.Bot):
             await self.close()
             return
         logger.info(f"Notification channel found: #{self.notify_channel.name}")
+        await self.restore_views()
         self.check_recently_watched.start()
 
 def main():
