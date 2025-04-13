@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from logging_config import DiscordHandler
 from views import MovieButtons
 import platform
+import requests
 
 # Set event loop policy for Windows compatibility with aiodns
 if platform.system() == "Windows":
@@ -32,6 +33,8 @@ GUILD_ID = int(os.getenv("GUILD_ID"))
 PLEX_USERNAME = os.getenv("PLEX_USERNAME")
 PLEX_LOGO = "https://i.imgur.com/AdmDnsP.png"
 LETTERBOXD_LOGO = "https://i.imgur.com/0Yd2L4i.png"
+
+CURRENT_VERSION = "1.1.3"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MOVIE_DATA_PATH = os.path.join(SCRIPT_DIR, '../data/movie_data.json')
@@ -78,6 +81,28 @@ def setup_logging():
     return logger
 
 logger = setup_logging()
+
+def check_latest_version():
+    """Check the latest version on GitHub and compare with the current version."""
+    try:
+        api_url = "https://api.github.com/repos/nichtlegacy/Plexboxd/releases/latest"
+        response = requests.get(api_url, timeout=5)
+        response.raise_for_status()
+        
+        latest_version = response.json().get("tag_name", "unknown")
+        
+        if latest_version != CURRENT_VERSION:
+            logger.warning(
+                f"New version available! Current: {CURRENT_VERSION}, Latest: {latest_version}. "
+                "Please update from https://github.com/nichtlegacy/Plexboxd"
+            )
+        else:
+            logger.info(f"Running the latest version: {CURRENT_VERSION}")
+            
+        return latest_version
+    except Exception as e:
+        logger.error(f"Failed to check latest version: {str(e)}")
+        return None
 
 class PlexMonitor:
     """Monitor Plex server for watched movies."""
@@ -165,6 +190,9 @@ class PlexDiscordBot(commands.Bot):
 
     async def setup_hook(self):
         """Initialize bot and Plex connection."""
+        # Check version before initializing
+        check_latest_version()
+        
         if not await self.plex_monitor.initialize():
             logger.error("Bot startup aborted due to Plex connection failure")
             await self.close()
