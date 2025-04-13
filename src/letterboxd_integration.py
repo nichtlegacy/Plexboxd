@@ -159,6 +159,9 @@ def get_film_id_selenium(session, film_name, film_year, original_title=None):
 def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None):
     if viewing_date:
         viewing_date = datetime.fromisoformat(viewing_date)
+        if viewing_date.hour < DATE_THRESHOLD_HOUR:
+            viewing_date = viewing_date - timedelta(days=1)
+            logger.info(f"Viewing time {viewing_date.strftime('%H:%M')} is before {DATE_THRESHOLD_HOUR}:00, adjusted date to {viewing_date.strftime('%Y-%m-%d')}")
     else:
         viewing_date = get_adjusted_date()
 
