@@ -34,7 +34,7 @@ PLEX_USERNAME = os.getenv("PLEX_USERNAME")
 PLEX_LOGO = "https://i.imgur.com/AdmDnsP.png"
 LETTERBOXD_LOGO = "https://i.imgur.com/0Yd2L4i.png"
 
-CURRENT_VERSION = "1.1.3"
+CURRENT_VERSION = "1.1.4"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MOVIE_DATA_PATH = os.path.join(SCRIPT_DIR, '../data/movie_data.json')
