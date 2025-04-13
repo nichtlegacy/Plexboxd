@@ -90,16 +90,16 @@ def check_latest_version():
         response.raise_for_status()
         
         latest_version = response.json().get("tag_name", "unknown")
+        cleaned_latest_version = latest_version.lstrip('v')
         
-        if latest_version != CURRENT_VERSION:
+        logger.info(f"Running version: v{CURRENT_VERSION} | Latest Version: v{cleaned_latest_version}")
+        
+        if cleaned_latest_version != CURRENT_VERSION:
             logger.warning(
-                f"New version available! Current: {CURRENT_VERSION}, Latest: {latest_version}. "
-                "Please update from https://github.com/nichtlegacy/Plexboxd"
+                "New version available! Please update from https://github.com/nichtlegacy/Plexboxd"
             )
-        else:
-            logger.info(f"Running the latest version: {CURRENT_VERSION}")
             
-        return latest_version
+        return cleaned_latest_version
     except Exception as e:
         logger.error(f"Failed to check latest version: {str(e)}")
         return None
