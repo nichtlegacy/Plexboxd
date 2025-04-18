@@ -100,11 +100,38 @@ def login(session):
     
     return csrf_token
 
-def get_film_id_selenium(session, film_name, film_year, original_title=None):
-    """Retrieve film ID from Letterboxd using Selenium, preferring original title."""
+def get_film_id_selenium(session, film_name, film_year, original_title=None, tmdb_id=None):
+    """Retrieve film ID from Letterboxd using TMDb ID or fallback to search."""
     search_title = original_title if original_title else film_name
-    logger.info(f"Searching for film: {search_title} ({film_year})")
-    
+    logger.info(f"Searching for film: {search_title} ({film_year}) with TMDb ID: {tmdb_id}")
+
+    # Try TMDb ID approach first if available
+    if tmdb_id:
+        try:
+            tmdb_url = f"https://letterboxd.com/tmdb/{tmdb_id}"
+            logger.info(f"Attempting to fetch film ID via TMDb URL: {tmdb_url}")
+            headers = {
+                "User-Agent": session.headers['User-Agent'],
+                "Referer": "https://letterboxd.com/",
+            }
+            response = session.get(tmdb_url, headers=headers, allow_redirects=True)
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, "html.parser")
+                film_poster = soup.find("div", class_="film-poster")
+                if film_poster and 'data-film-id' in film_poster.attrs:
+                    film_id = film_poster['data-film-id']
+                    logger.info(f"Film ID found via TMDb ID: {film_id}")
+                    return film_id
+                else:
+                    logger.warning(f"No film ID found at TMDb URL: {tmdb_url}, falling back to search")
+            else:
+                logger.warning(f"TMDb URL request failed with status {response.status_code}, falling back to search")
+        except Exception as e:
+            logger.error(f"Error fetching film ID via TMDb ID: {str(e)}, falling back to search")
+
+    # Fallback to existing Selenium-based search
+    logger.info(f"Using fallback search for: {search_title} ({film_year})")
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
@@ -151,7 +178,7 @@ def get_film_id_selenium(session, film_name, film_year, original_title=None):
         return None
         
     except Exception as e:
-        logger.error(f"Error retrieving film ID: {str(e)}")
+        logger.error(f"Error retrieving film ID via search: {str(e)}")
         return None
     finally:
         driver.quit()

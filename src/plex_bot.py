@@ -8,7 +8,7 @@ from logging.handlers import TimedRotatingFileHandler
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional
 from dotenv import load_dotenv
 from logging_config import DiscordHandler
@@ -34,7 +34,7 @@ PLEX_USERNAME = os.getenv("PLEX_USERNAME")
 PLEX_LOGO = "https://i.imgur.com/AdmDnsP.png"
 LETTERBOXD_LOGO = "https://i.imgur.com/0Yd2L4i.png"
 
-CURRENT_VERSION = "1.1.4"
+CURRENT_VERSION = "1.1.5"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MOVIE_DATA_PATH = os.path.join(SCRIPT_DIR, '../data/movie_data.json')
@@ -149,6 +149,14 @@ class PlexMonitor:
         try:
             hours, remaining_minutes = divmod(movie.duration // 60000, 60)
             duration_str = f"{hours}h {remaining_minutes}min" if hours else f"{remaining_minutes}min"
+            
+            # Extract TMDb ID from guids
+            tmdb_id = None
+            for guid in getattr(movie, 'guids', []):
+                if 'tmdb' in guid.id:
+                    tmdb_id = guid.id.split('tmdb://')[-1]
+                    break
+
             return {
                 'title': movie.title,
                 'original_title': getattr(movie, 'originalTitle', movie.title),
@@ -161,7 +169,8 @@ class PlexMonitor:
                 'ratingKey': str(movie.ratingKey),
                 'last_viewed_at': movie.lastViewedAt.isoformat() if movie.lastViewedAt else None,
                 'view_count': getattr(movie, 'viewCount', 0),
-                'summary': getattr(movie, 'summary', "No description available")
+                'summary': getattr(movie, 'summary', "No description available"),
+                'tmdb_id': tmdb_id
             }
         except Exception as e:
             logger.error(f"Error fetching details for {movie.title}: {str(e)}")
@@ -198,13 +207,35 @@ class PlexDiscordBot(commands.Bot):
             await self.close()
 
     async def restore_views(self):
-        """Reattach views to notifications with message_id on startup."""
+        """Reattach views to notifications for recent movies missing is_rated."""
         logger.info("Restoring views for notifications...")
         if not self.notify_channel:
             logger.error("Notify channel not initialized, cannot restore views")
             return
 
+        cutoff_date = datetime.now() - timedelta(days=5)  # Only process movies from the last 5 days
+
         for movie_key, movie_data in self.plex_monitor.watched_movies.items():
+            # Skip if movie is explicitly rated
+            if movie_data.get('is_rated', False):
+                logger.info(f"Skipping view restoration for {movie_data['title']} ({movie_data['year']}) - already rated")
+                continue
+
+            # Skip if movie is older than 5 days
+            last_viewed_at = movie_data.get('last_viewed_at')
+            if last_viewed_at:
+                try:
+                    last_viewed_dt = datetime.fromisoformat(last_viewed_at)
+                    if last_viewed_dt < cutoff_date:
+                        logger.debug(f"Skipping view restoration for {movie_data['title']} ({movie_data['year']}) - watched before {cutoff_date.strftime('%Y-%m-%d')}")
+                        continue
+                except ValueError:
+                    logger.warning(f"Invalid last_viewed_at format for {movie_data['title']} ({movie_data['year']}), skipping")
+                    continue
+            else:
+                logger.warning(f"No last_viewed_at for {movie_data['title']} ({movie_data['year']}), skipping")
+                continue
+
             notification = movie_data.get('notification')
             if not notification:
                 logger.debug(f"No notification data for {movie_data['title']} ({movie_data['year']}), skipping")
@@ -227,10 +258,13 @@ class PlexDiscordBot(commands.Bot):
                     movie_title=movie_data['title'],
                     movie_year=movie_data['year'],
                     original_title=movie_data.get('original_title', movie_data['title']),
-                    last_viewed_at=movie_data.get('last_viewed_at')
+                    last_viewed_at=movie_data.get('last_viewed_at'),
+                    tmdb_id=movie_data.get('tmdb_id'),
+                    bot=self
                 )
                 await message.edit(view=view)
                 logger.info(f"Restored view for {movie_data['title']} ({movie_data['year']})")
+                await asyncio.sleep(0.5)  # Add delay to avoid rate limits
             except discord.NotFound:
                 logger.warning(f"Message {message_id} for {movie_data['title']} not found, removing notification data")
                 movie_data.pop('notification', None)
@@ -280,7 +314,9 @@ class PlexDiscordBot(commands.Bot):
                         movie_details['title'],
                         movie_details['year'],
                         movie_details['original_title'],
-                        last_viewed_at=movie_details.get('last_viewed_at')
+                        last_viewed_at=movie_details.get('last_viewed_at'),
+                        tmdb_id=movie_details.get('tmdb_id'),
+                        bot=self
                     )
                     
                     mention = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
@@ -296,6 +332,7 @@ class PlexDiscordBot(commands.Bot):
                         'message_id': str(message.id),
                         'channel_id': str(self.notify_channel.id)
                     }
+                    movie_details['is_rated'] = False  # Initialize as unrated
                     
                     self.plex_monitor.watched_movies[movie_key] = movie_details
                     self.plex_monitor.save_movie_data()

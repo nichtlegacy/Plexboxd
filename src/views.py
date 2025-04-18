@@ -9,12 +9,14 @@ logger = logging.getLogger('PlexBot')
 
 class MovieButtons(View):
     """Interactive buttons for rating movies on Letterboxd."""
-    def __init__(self, movie_title: str, movie_year: int, original_title: str = None, last_viewed_at: str = None):
+    def __init__(self, movie_title: str, movie_year: int, original_title: str = None, last_viewed_at: str = None, tmdb_id: str = None, bot=None):
         super().__init__(timeout=None)
         self.movie_title = movie_title
         self.movie_year = movie_year
         self.original_title = original_title or movie_title
         self.last_viewed_at = last_viewed_at
+        self.tmdb_id = tmdb_id
+        self.bot = bot  # Store bot instance to access plex_monitor
 
         rating_options = [
             discord.SelectOption(label=f"{rating} ★", value=str(rating))
@@ -42,7 +44,7 @@ class MovieButtons(View):
                 "Referer": "https://letterboxd.com/",
             })
             csrf_token = login(session)
-            film_id = get_film_id_selenium(session, self.movie_title, self.movie_year, self.original_title)
+            film_id = get_film_id_selenium(session, self.movie_title, self.movie_year, self.original_title, tmdb_id=self.tmdb_id)
             if not film_id:
                 raise ValueError(f"Could not find film ID for '{self.original_title}' ({self.movie_year})")
             save_diary_entry(session, csrf_token, film_id, rating, viewing_date=self.last_viewed_at)
@@ -62,6 +64,17 @@ class MovieButtons(View):
             embed.set_author(name="Letterboxd Rating", icon_url="https://i.imgur.com/0Yd2L4i.png")
             await interaction.followup.send(embed=embed, ephemeral=True)
             await interaction.message.edit(view=self)
+
+            # Update movie data to mark as rated
+            if self.bot and self.bot.plex_monitor:
+                for movie_key, movie_data in self.bot.plex_monitor.watched_movies.items():
+                    if (movie_data['title'] == self.movie_title and 
+                        movie_data['year'] == self.movie_year and 
+                        movie_data.get('last_viewed_at') == self.last_viewed_at):
+                        movie_data['is_rated'] = True
+                        self.bot.plex_monitor.save_movie_data()
+                        logger.info(f"Marked {self.movie_title} ({self.movie_year}) as rated in movie_data.json")
+                        break
 
         except Exception as e:
             logger.error(f"Failed to rate movie on Letterboxd: {str(e)}")
