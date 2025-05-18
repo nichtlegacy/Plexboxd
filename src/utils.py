@@ -5,6 +5,7 @@ import io
 import logging
 from datetime import datetime
 from typing import Dict, Tuple, Optional
+import json
 
 async def create_movie_embed(movie_details: Dict) -> Tuple[discord.Embed, Optional[discord.File]]:
     """Create a Discord embed and optional file for movie notification."""
@@ -15,9 +16,12 @@ async def create_movie_embed(movie_details: Dict) -> Tuple[discord.Embed, Option
         timestamp=discord.utils.utcnow()
     )
     
+    genres = [g.strip() for g in movie_details.get('genres', '').split(',')] if movie_details.get('genres') else ['Unknown']
+    directors = [d.strip() for d in movie_details.get('directors', '').split(',')] if movie_details.get('directors') else ['Unknown']
+    
     embed.add_field(name="⏳ Duration", value=movie_details['duration'], inline=True)
-    embed.add_field(name="🎭 Genre", value=', '.join(movie_details['genres'][:3] or ['Unknown']), inline=True)
-    embed.add_field(name="🎬 Director", value=', '.join(movie_details['directors'] or ['Unknown']), inline=True)
+    embed.add_field(name="🎭 Genre", value=', '.join(genres[:3]), inline=True)
+    embed.add_field(name="🎬 Director", value=', '.join(directors), inline=True)
     embed.add_field(name="⭐ Rating", value=movie_details['rating'], inline=True)
 
     if movie_details['view_count'] > 1 and movie_details['last_viewed_at']:

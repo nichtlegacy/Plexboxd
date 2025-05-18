@@ -143,7 +143,7 @@ services:
    ```
 
 #### Persistent Volumes
-To ensure logs and data (like `movie_data.json`) persist across container restarts, map the following volumes:
+To ensure logs and data (like `movie_data.db`) persist across container restarts, map the following volumes:
 - **Logs**: Host path (e.g., `./logs`) to container path `/app/logs`
 - **Data**: Host path (e.g., `./data`) to container path `/app/data`
 
@@ -197,7 +197,7 @@ The `.env` file contains all the necessary configuration parameters:
 ```
 📦 Plexboxd
 ├─ /data                            # Stores persistent data
-│  └─ movie_data.json               # Cached movie data and watch history
+│  └─ movie_data.db               # Cached movie data and watch history
 ├─ /logs                            # Log files directory
 │  ├─ letterboxd_integration.log    # Letterboxd integration logs
 │  └─ plex_bot.log                  # Main bot logs

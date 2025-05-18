@@ -91,17 +91,28 @@ def login(session):
     try:
         login_response = json.loads(response.text)
         if login_response.get("result") != "success":
-            logger.error(f"Login failed: {login_response.get('messages')}")
-            raise ValueError(f"Login failed: {login_response.get('messages')}")
-        logger.info("Login successful!")
+            logger.error(f"Letterboxd login failed: {login_response.get('messages', 'Unknown error')}")
+            raise ValueError(f"Letterboxd login failed: {login_response.get('messages', 'Unknown error')}")
+        logger.info("Successfully logged in to Letterboxd")
     except json.JSONDecodeError:
-        logger.error("Login response is not JSON!")
-        raise ValueError("Login response is not JSON")
+        logger.error("Invalid JSON response during Letterboxd login")
+        raise ValueError("Invalid JSON response during Letterboxd login")
     
     return csrf_token
 
 def get_film_id_selenium(session, film_name, film_year, original_title=None, tmdb_id=None):
-    """Retrieve film ID from Letterboxd using TMDb ID or fallback to search."""
+    """Retrieve film ID from Letterboxd using TMDb ID or search.
+    
+    Args:
+        session: The requests session with authentication.
+        film_name: The name of the film to search for.
+        film_year: The release year of the film.
+        original_title: Optional original title of the film.
+        tmdb_id: Optional TMDb ID for direct lookup.
+        
+    Returns:
+        str: The Letterboxd film ID if found, None otherwise.
+    """
     search_title = original_title if original_title else film_name
     logger.info(f"Searching for film: {search_title} ({film_year}) with TMDb ID: {tmdb_id}")
 
@@ -184,6 +195,18 @@ def get_film_id_selenium(session, film_name, film_year, original_title=None, tmd
         driver.quit()
 
 def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None):
+    """Save a diary entry with rating and adjusted date.
+    
+    Args:
+        session: The requests session with authentication.
+        csrf_token: The CSRF token for the request.
+        film_id: The Letterboxd film ID.
+        rating: The rating value (0.5-5.0).
+        viewing_date: Optional ISO format date string.
+    
+    Raises:
+        ValueError: If the diary entry fails or response is invalid.
+    """
     if viewing_date:
         viewing_date = datetime.fromisoformat(viewing_date)
         if viewing_date.hour < DATE_THRESHOLD_HOUR:
@@ -220,13 +243,14 @@ def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None):
     try:
         diary_response = json.loads(response.text)
         if diary_response.get("result") is True:
-            logger.info(f"Diary entry with rating {rating} stars saved successfully!")
+            logger.info(f"Successfully saved diary entry with {rating} stars")
         else:
-            logger.error(f"Diary entry failed: {diary_response.get('messages')}")
-            raise ValueError(f"Diary entry failed: {diary_response.get('messages')}")
+            error_msg = diary_response.get('messages', 'Unknown error')
+            logger.error(f"Failed to save diary entry: {error_msg}")
+            raise ValueError(f"Failed to save diary entry: {error_msg}")
     except json.JSONDecodeError:
-        logger.error(f"Diary response is not JSON: {response.text}")
-        raise ValueError("Diary response is not JSON")
+        logger.error("Invalid JSON response while saving diary entry")
+        raise ValueError("Invalid JSON response while saving diary entry")
 
 def get_adjusted_date():
     """Return adjusted date: previous day if before the configured threshold hour."""
