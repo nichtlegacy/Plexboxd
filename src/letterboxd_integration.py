@@ -129,9 +129,10 @@ def get_film_id_selenium(session, film_name, film_year, original_title=None, tmd
             
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
-                film_poster = soup.find("div", class_="film-poster")
-                if film_poster and 'data-film-id' in film_poster.attrs:
-                    film_id = film_poster['data-film-id']
+                # Look for any element with data-film-id attribute (new structure)
+                film_element = soup.find(attrs={"data-film-id": True})
+                if film_element:
+                    film_id = film_element['data-film-id']
                     logger.info(f"Film ID found via TMDb ID: {film_id}")
                     return film_id
                 else:
@@ -171,17 +172,32 @@ def get_film_id_selenium(session, film_name, film_year, original_title=None, tmd
         wait = WebDriverWait(driver, 10)
         if "/film/" in driver.current_url:
             logger.info(f"Redirected to film page: {driver.current_url}")
-            film_elem = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.film-poster")))
-            film_id = film_elem.get_attribute("data-film-id")
-            logger.info(f"Film ID found directly: {film_id}")
+            # Try to find film ID on the page - check both new and old structures
+            film_id = None
+
+            # First try the new structure
+            try:
+                film_elem = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-film-id]")))
+                film_id = film_elem.get_attribute("data-film-id")
+                logger.info(f"Film ID found via data-film-id: {film_id}")
+            except:
+                # Fallback to old structure
+                try:
+                    film_elem = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.film-poster")))
+                    film_id = film_elem.get_attribute("data-film-id")
+                    logger.info(f"Film ID found via film-poster: {film_id}")
+                except:
+                    logger.warning("Could not find film ID on direct film page")
+
             return film_id
         
-        film_posters = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.film-poster")))
-        logger.info(f"Found {len(film_posters)} film posters in search results")
-        
-        if film_posters:
-            first_poster = driver.find_elements(By.CSS_SELECTOR, "div.film-poster")[0]
-            film_id = first_poster.get_attribute("data-film-id")
+        # Look for elements with data-film-id attribute (the new structure)
+        film_elements = wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "[data-film-id]")))
+        logger.info(f"Found {len(film_elements)} elements with data-film-id attribute")
+
+        if film_elements:
+            first_film_element = film_elements[0]
+            film_id = first_film_element.get_attribute("data-film-id")
             logger.info(f"Selected first film ID: {film_id}")
             return film_id
         
