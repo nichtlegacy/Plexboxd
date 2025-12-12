@@ -135,6 +135,8 @@ class MovieDatabase:
             ''')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_last_viewed ON movies(last_viewed_at)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_is_rated ON movies(is_rated)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_tmdb_id ON movies(tmdb_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_title_year ON movies(title, year)')
 
     @contextmanager
     def _get_connection(self):
@@ -220,6 +222,42 @@ class MovieDatabase:
         """Mark a movie as rated."""
         with self._get_connection() as conn:
             conn.execute('UPDATE movies SET is_rated = 1 WHERE rating_key = ?', (rating_key,))
+
+    def was_recently_notified(self, tmdb_id: str, title: str, year: int, last_viewed_at: datetime, threshold_seconds: int = 1800) -> bool:
+        """Check if a notification was already sent for this movie (across all libraries).
+        
+        Uses TMDB ID as primary identifier, falls back to title+year.
+        Returns True if a notification was sent within the threshold period.
+        """
+        with self._get_connection() as conn:
+            # First try to find by TMDB ID (most reliable)
+            if tmdb_id:
+                cursor = conn.execute('''
+                    SELECT last_viewed_at, notification_data FROM movies 
+                    WHERE tmdb_id = ? AND notification_data IS NOT NULL AND notification_data != '{}'
+                    ORDER BY last_viewed_at DESC LIMIT 1
+                ''', (tmdb_id,))
+                row = cursor.fetchone()
+                if row and row['last_viewed_at']:
+                    stored_viewed_at = datetime.fromisoformat(row['last_viewed_at'])
+                    time_diff = abs((last_viewed_at - stored_viewed_at).total_seconds())
+                    if time_diff < threshold_seconds:
+                        return True
+            
+            # Fallback: check by title + year
+            cursor = conn.execute('''
+                SELECT last_viewed_at, notification_data FROM movies 
+                WHERE title = ? AND year = ? AND notification_data IS NOT NULL AND notification_data != '{}'
+                ORDER BY last_viewed_at DESC LIMIT 1
+            ''', (title, year))
+            row = cursor.fetchone()
+            if row and row['last_viewed_at']:
+                stored_viewed_at = datetime.fromisoformat(row['last_viewed_at'])
+                time_diff = abs((last_viewed_at - stored_viewed_at).total_seconds())
+                if time_diff < threshold_seconds:
+                    return True
+            
+            return False
 
     def migrate_from_json(self, json_path):
         """Migrate data from the old JSON file to SQLite database."""
@@ -480,6 +518,17 @@ class PlexDiscordBot(commands.Bot):
                         continue
 
                     movie_key = movie_details['ratingKey']
+                    
+                    # Check if this movie was already notified (handles duplicates across libraries)
+                    if self.plex_monitor.db.was_recently_notified(
+                        tmdb_id=movie_details.get('tmdb_id'),
+                        title=movie_details['title'],
+                        year=movie_details['year'],
+                        last_viewed_at=last_viewed,
+                        threshold_seconds=1800
+                    ):
+                        logger.info(f"Movie {movie_details['title']} ({movie_details['year']}) was already notified (duplicate across libraries), skipping")
+                        continue
                     
                     with self.plex_monitor.db._get_connection() as conn:
                         cursor = conn.execute('SELECT * FROM movies WHERE rating_key = ?', (movie_key,))
