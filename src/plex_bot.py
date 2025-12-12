@@ -32,10 +32,11 @@ PLEX_SERVER_URL = os.getenv("PLEX_SERVER_URL")
 NOTIFY_CHANNEL_ID = int(os.getenv("NOTIFY_CHANNEL_ID"))
 GUILD_ID = int(os.getenv("GUILD_ID"))
 PLEX_USERNAME = os.getenv("PLEX_USERNAME")
+EXCLUDED_LIBRARIES = [lib.strip() for lib in os.getenv("EXCLUDED_LIBRARIES", "").split(",") if lib.strip()]
 PLEX_LOGO = "https://i.imgur.com/AdmDnsP.png"
 LETTERBOXD_LOGO = "https://i.imgur.com/0Yd2L4i.png"
 
-CURRENT_VERSION = "1.1.6"
+CURRENT_VERSION = "1.1.8"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MOVIE_DATA_PATH = os.path.join(SCRIPT_DIR, '../data/movie_data.json')
@@ -387,7 +388,8 @@ class PlexMonitor:
                 'last_viewed_at': movie.lastViewedAt.isoformat() if movie.lastViewedAt else None,
                 'view_count': getattr(movie, 'viewCount', 0),
                 'summary': getattr(movie, 'summary', "No description available"),
-                'tmdb_id': tmdb_id
+                'tmdb_id': tmdb_id,
+                'library': getattr(movie, 'librarySectionTitle', 'Unknown')
             }
         except Exception as e:
             logger.error(f"Error fetching details for {movie.title}: {str(e)}")
@@ -497,24 +499,43 @@ class PlexDiscordBot(commands.Bot):
                     logger.error("Failed to reconnect to Plex server")
                     return
 
-            recently_watched = self.plex_monitor.plex.library.search(
-                unwatched=False,
-                libtype='movie'
-            )
+            # Use history() to get actually played movies with correct library info
+            # This shows which library the movie was actually played from
+            history = self.plex_monitor.plex.history(maxresults=50)
             current_time = datetime.now()
 
-            for movie in recently_watched:
+            for history_item in history:
                 try:
-                    last_viewed = getattr(movie, 'lastViewedAt', None)
+                    # Only process movies
+                    if history_item.type != 'movie':
+                        continue
+                    
+                    # Check if viewed recently (within 30 minutes)
+                    last_viewed = getattr(history_item, 'viewedAt', None)
                     if not last_viewed or (current_time - last_viewed).total_seconds() > 1800:
                         continue
 
+                    # Get the full movie object to extract all details
+                    try:
+                        movie = self.plex_monitor.plex.fetchItem(history_item.ratingKey)
+                    except Exception as e:
+                        logger.warning(f"Could not fetch movie details for {history_item.title}: {str(e)}")
+                        continue
+
                     if self.plex_monitor.is_movie_currently_playing(movie.title):
-                        logger.info(f"Movie {movie.title} {movie.year} is currently playing, skipping notification")
+                        logger.info(f"Movie {movie.title} ({movie.year}) is currently playing, skipping notification")
                         continue
 
                     movie_details = self.plex_monitor.get_movie_details(movie)
                     if not movie_details:
+                        continue
+                    
+                    # Override last_viewed_at with the actual viewing time from history
+                    movie_details['last_viewed_at'] = last_viewed.isoformat() if last_viewed else None
+
+                    # Check if library is excluded
+                    if movie_details.get('library') in EXCLUDED_LIBRARIES:
+                        logger.info(f"Movie {movie_details['title']} ({movie_details['year']}) is from excluded library '{movie_details['library']}', skipping")
                         continue
 
                     movie_key = movie_details['ratingKey']

@@ -23,6 +23,9 @@ async def create_movie_embed(movie_details: Dict) -> Tuple[discord.Embed, Option
     embed.add_field(name="🎭 Genre", value=', '.join(genres[:3]), inline=True)
     embed.add_field(name="🎬 Director", value=', '.join(directors), inline=True)
     embed.add_field(name="⭐ Rating", value=movie_details['rating'], inline=True)
+    
+    if movie_details.get('library'):
+        embed.add_field(name="📚 Library", value=movie_details['library'], inline=True)
 
     if movie_details['view_count'] > 1 and movie_details['last_viewed_at']:
         embed.add_field(
