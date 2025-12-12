@@ -9,7 +9,7 @@ on:
   push:
     branches:
       - main
-      - Dev
+      - dev
   release:
     types:
       - published
@@ -40,7 +40,7 @@ jobs:
         tags: |
           type=sha
           type=semver,pattern={{version}}
-          type=raw,value=dev,enable=${{ github.ref == 'refs/heads/Dev' }}
+          type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
           type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
         flavor: |
           latest=${{ github.event_name == 'release' }}
