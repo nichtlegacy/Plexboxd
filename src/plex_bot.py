@@ -36,7 +36,7 @@ EXCLUDED_LIBRARIES = [lib.strip() for lib in os.getenv("EXCLUDED_LIBRARIES", "")
 PLEX_LOGO = "https://i.imgur.com/AdmDnsP.png"
 LETTERBOXD_LOGO = "https://i.imgur.com/0Yd2L4i.png"
 
-CURRENT_VERSION = "1.1.8"
+CURRENT_VERSION = "1.1.9"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MOVIE_DATA_PATH = os.path.join(SCRIPT_DIR, '../data/movie_data.json')
@@ -503,11 +503,26 @@ class PlexDiscordBot(commands.Bot):
             # This shows which library the movie was actually played from
             history = self.plex_monitor.plex.history(maxresults=50)
             current_time = datetime.now()
+            
+            # Get the configured user's account ID once
+            user_account_id = None
+            try:
+                for account in self.plex_monitor.plex.systemAccounts():
+                    # Check both name (username/email) and title (display name)
+                    if account.name == PLEX_USERNAME or getattr(account, 'title', '') == PLEX_USERNAME:
+                        user_account_id = account.id
+                        break
+            except Exception as e:
+                logger.warning(f"Could not get user account ID: {str(e)}")
 
             for history_item in history:
                 try:
                     # Only process movies
                     if history_item.type != 'movie':
+                        continue
+                    
+                    # Only process movies watched by the configured user
+                    if user_account_id is not None and history_item.accountID != user_account_id:
                         continue
                     
                     # Check if viewed recently (within 30 minutes)
