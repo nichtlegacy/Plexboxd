@@ -19,6 +19,8 @@ Plexboxd is a Discord bot that automatically tracks movies watched on Plex and i
 - ⭐ **Letterboxd Integration**: Rate movies directly from Discord with seamless Letterboxd logging
 - 📊 **Watch History**: Keeps track of your viewing history with timestamps and rating data
 - 🌙 **Date Threshold**: Configurable time threshold to determine if late-night watches count for the current or previous day
+- 📚 **Multi-Library Support**: Correctly identifies which library a movie was played from, even with duplicates across libraries
+- 🚫 **Library Exclusion**: Exclude specific libraries from notifications (e.g., 4K or Kids libraries)
 
 ## Requirements
 
@@ -77,7 +79,7 @@ docker run -d \
   -e PLEX_USERNAME="your-plex-username" \
   -e PLEX_TOKEN="your-plex-token" \
   -e PLEX_SERVER_URL="http://your-plex-server:32400" \
-  -e PLEX_LIBRARY_NAME="Movies" \
+  -e EXCLUDED_LIBRARIES="" \
   -e NOTIFY_CHANNEL_ID="your-channel-id" \
   -e GUILD_ID="your-guild-id" \
   -e LETTERBOXD_USERNAME="your-letterboxd-username" \
@@ -119,7 +121,7 @@ services:
    PLEX_USERNAME=your-plex-username
    PLEX_TOKEN=your-plex-token
    PLEX_SERVER_URL=http://your-plex-server:32400
-   PLEX_LIBRARY_NAME=Movies
+   EXCLUDED_LIBRARIES=
    NOTIFY_CHANNEL_ID=your-channel-id
    GUILD_ID=your-guild-id
    LETTERBOXD_USERNAME=your-letterboxd-username
@@ -166,7 +168,7 @@ The `.env` file contains all the necessary configuration parameters:
 - `PLEX_USERNAME`: Your Plex account username
 - `PLEX_TOKEN`: Your Plex authentication token
 - `PLEX_SERVER_URL`: URL of your Plex server (e.g., `http://192.168.1.100:32400`)
-- `PLEX_LIBRARY_NAME`: Name of your Plex movie library (e.g., `Movies`)
+- `EXCLUDED_LIBRARIES`: Comma-separated list of library names to exclude from notifications (e.g., `4K Movies,Kids Movies`)
 
 #### Letterboxd Configuration
 - `LETTERBOXD_USERNAME`: Your Letterboxd username
