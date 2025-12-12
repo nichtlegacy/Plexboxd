@@ -96,7 +96,7 @@ def check_latest_version():
         
         logger.info(f"Running version: v{CURRENT_VERSION} | Latest Version: v{cleaned_latest_version}")
         
-        if cleaned_latest_version < CURRENT_VERSION:
+        if cleaned_latest_version > CURRENT_VERSION:
             logger.warning(
                 "New version available! Please update from https://github.com/nichtlegacy/Plexboxd"
             )
@@ -439,7 +439,7 @@ class PlexDiscordBot(commands.Bot):
                     AND notification_data IS NOT NULL 
                     AND notification_data != '{}'
                     ORDER BY last_viewed_at DESC 
-                    LIMIT 2
+                    LIMIT 4
                 ''')
                 movies = [dict(row) for row in cursor.fetchall()]
 
