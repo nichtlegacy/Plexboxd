@@ -210,8 +210,8 @@ def get_film_id_selenium(session, film_name, film_year, original_title=None, tmd
     finally:
         driver.quit()
 
-def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None):
-    """Save a diary entry with rating and adjusted date.
+def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None, rewatch=False, liked=False, tags="", review=""):
+    """Save a diary entry with rating and optional diary fields.
     
     Args:
         session: The requests session with authentication.
@@ -219,6 +219,10 @@ def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None):
         film_id: The Letterboxd film ID.
         rating: The rating value (0.5-5.0).
         viewing_date: Optional ISO format date string.
+        rewatch: Whether this is a rewatch (default False).
+        liked: Whether the user liked the film (default False).
+        tags: Comma-separated tags string (default empty).
+        review: Review text (default empty).
     
     Raises:
         ValueError: If the diary entry fails or response is invalid.
@@ -231,7 +235,6 @@ def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None):
     else:
         viewing_date = get_adjusted_date()
 
-    """Save a diary entry with rating and adjusted date."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
         "Referer": "https://letterboxd.com/",
@@ -247,14 +250,39 @@ def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None):
         "filmId": film_id,
         "specifiedDate": "true",
         "viewingDateStr": viewing_date.strftime("%Y-%m-%d"),
-        "review": "",
-        "tags": "",
+        "review": review,
+        "tags": tags,
         "rating": int(rating * 2),  # Convert to 1-10 scale
-        "liked": "false",
+        "liked": "true" if liked else "false",
+        "rewatch": "true" if rewatch else "false",
         "reviewLanguageCodeHint": "de-DE"
     }
-    logger.info(f"Saving diary entry for film ID {film_id} with rating {rating} for date {viewing_date.strftime('%Y-%m-%d')}")
-    response = session.post(DIARY_URL, data=diary_data, headers=headers)
+    
+    # Parse and add individual tags (Letterboxd expects multiple 'tag' fields)
+    if tags:
+        # Split by comma or space, strip whitespace, filter empty
+        tag_list = [t.strip() for t in tags.replace(',', ' ').split() if t.strip()]
+        for tag in tag_list:
+            # Use list to allow multiple 'tag' keys
+            if 'tag' not in diary_data:
+                diary_data['tag'] = []
+            if isinstance(diary_data.get('tag'), list):
+                diary_data['tag'].append(tag)
+            else:
+                diary_data['tag'] = [diary_data['tag'], tag]
+    
+    logger.info(f"Saving diary entry for film ID {film_id} with rating {rating}, liked={liked}, rewatch={rewatch} for date {viewing_date.strftime('%Y-%m-%d')}")
+    
+    # Convert to proper format for requests (handle multiple tag values)
+    post_data = []
+    for key, value in diary_data.items():
+        if isinstance(value, list):
+            for v in value:
+                post_data.append((key, v))
+        else:
+            post_data.append((key, value))
+    
+    response = session.post(DIARY_URL, data=post_data, headers=headers)
     
     try:
         diary_response = json.loads(response.text)

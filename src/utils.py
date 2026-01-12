@@ -7,6 +7,9 @@ from datetime import datetime
 from typing import Dict, Tuple, Optional
 import json
 
+# Import branding constants from main module
+from plex_bot import PLEX_LOGO, LETTERBOXD_LOGO, EMBED_AUTHOR_NAME, EMBED_FOOTER_TEXT
+
 async def create_movie_embed(movie_details: Dict) -> Tuple[discord.Embed, Optional[discord.File]]:
     """Create a Discord embed and optional file for movie notification."""
     embed = discord.Embed(
@@ -26,18 +29,25 @@ async def create_movie_embed(movie_details: Dict) -> Tuple[discord.Embed, Option
     
     if movie_details.get('library'):
         embed.add_field(name="📚 Library", value=movie_details['library'], inline=True)
-
-    if movie_details['view_count'] > 1 and movie_details['last_viewed_at']:
+    else:
+        embed.add_field(name="\u200b", value="\u200b", inline=True)  # Empty field for alignment
+    
+    # If rewatch: View Count in same row as Library, Last Viewed (previous date) in next row
+    if movie_details['view_count'] > 1 and movie_details.get('previous_viewed_at'):
+        embed.add_field(name="📊 View Count", value=str(movie_details['view_count']), inline=True)
         embed.add_field(
             name="👀 Last Viewed",
-            value=datetime.fromisoformat(movie_details['last_viewed_at']).strftime('%d.%m.%Y %H:%M'),
+            value=datetime.fromisoformat(movie_details['previous_viewed_at']).strftime('%d.%m.%Y %H:%M'),
             inline=True
         )
-        embed.add_field(name="📊 View Count", value=str(movie_details['view_count']), inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=True)  # Empty field for alignment
+        embed.add_field(name="\u200b", value="\u200b", inline=True)  # Empty field for alignment
+    else:
+        embed.add_field(name="\u200b", value="\u200b", inline=True)  # Empty field for alignment
     
-    embed.set_author(name="Plex Movie Notification 🎬", icon_url="https://i.imgur.com/AdmDnsP.png")
-    embed.set_thumbnail(url="https://i.imgur.com/AdmDnsP.png")
-    embed.set_footer(text="Watched", icon_url="https://i.imgur.com/AdmDnsP.png")
+    embed.set_author(name=EMBED_AUTHOR_NAME, icon_url=PLEX_LOGO)
+    embed.set_thumbnail(url=PLEX_LOGO)
+    embed.set_footer(text=EMBED_FOOTER_TEXT, icon_url=PLEX_LOGO)
     
     file = None
     if movie_details.get('thumb'):

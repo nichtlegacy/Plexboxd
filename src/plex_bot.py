@@ -33,10 +33,14 @@ NOTIFY_CHANNEL_ID = int(os.getenv("NOTIFY_CHANNEL_ID"))
 GUILD_ID = int(os.getenv("GUILD_ID"))
 PLEX_USERNAME = os.getenv("PLEX_USERNAME")
 EXCLUDED_LIBRARIES = [lib.strip() for lib in os.getenv("EXCLUDED_LIBRARIES", "").split(",") if lib.strip()]
+
+# Global branding constants
 PLEX_LOGO = "https://i.imgur.com/AdmDnsP.png"
 LETTERBOXD_LOGO = "https://i.imgur.com/0Yd2L4i.png"
+EMBED_AUTHOR_NAME = "Plex Movie Notification 🎬"
+EMBED_FOOTER_TEXT = "Watched"
 
-CURRENT_VERSION = "1.1.9"
+CURRENT_VERSION = "1.2.0"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MOVIE_DATA_PATH = os.path.join(SCRIPT_DIR, '../data/movie_data.json')
@@ -223,6 +227,67 @@ class MovieDatabase:
         """Mark a movie as rated."""
         with self._get_connection() as conn:
             conn.execute('UPDATE movies SET is_rated = 1 WHERE rating_key = ?', (rating_key,))
+
+    def was_previously_watched(self, tmdb_id: str = None, title: str = None, year: int = None) -> bool:
+        """Check if a movie was previously watched/rated (for rewatch detection).
+        
+        Uses TMDB ID as primary identifier, falls back to title+year.
+        Returns True if the movie exists in DB with is_rated = 1.
+        Backward compatible with old databases (gracefully handles missing data).
+        """
+        with self._get_connection() as conn:
+            # First try to find by TMDB ID (most reliable)
+            if tmdb_id:
+                cursor = conn.execute('''
+                    SELECT is_rated FROM movies 
+                    WHERE tmdb_id = ? AND is_rated = 1
+                    LIMIT 1
+                ''', (tmdb_id,))
+                if cursor.fetchone():
+                    return True
+            
+            # Fallback: check by title + year
+            if title and year:
+                cursor = conn.execute('''
+                    SELECT is_rated FROM movies 
+                    WHERE title = ? AND year = ? AND is_rated = 1
+                    LIMIT 1
+                ''', (title, year))
+                if cursor.fetchone():
+                    return True
+            
+            return False
+
+    def get_previous_viewing_date(self, tmdb_id: str = None, title: str = None, year: int = None) -> Optional[str]:
+        """Get the previous viewing date for a movie (for rewatch display).
+        
+        Uses TMDB ID as primary identifier, falls back to title+year.
+        Returns ISO format date string if found, None otherwise.
+        """
+        with self._get_connection() as conn:
+            # First try to find by TMDB ID (most reliable)
+            if tmdb_id:
+                cursor = conn.execute('''
+                    SELECT last_viewed_at FROM movies 
+                    WHERE tmdb_id = ? AND is_rated = 1
+                    ORDER BY last_viewed_at DESC LIMIT 1
+                ''', (tmdb_id,))
+                row = cursor.fetchone()
+                if row and row['last_viewed_at']:
+                    return row['last_viewed_at']
+            
+            # Fallback: check by title + year
+            if title and year:
+                cursor = conn.execute('''
+                    SELECT last_viewed_at FROM movies 
+                    WHERE title = ? AND year = ? AND is_rated = 1
+                    ORDER BY last_viewed_at DESC LIMIT 1
+                ''', (title, year))
+                row = cursor.fetchone()
+                if row and row['last_viewed_at']:
+                    return row['last_viewed_at']
+            
+            return None
 
     def was_recently_notified(self, tmdb_id: str, title: str, year: int, last_viewed_at: datetime, threshold_seconds: int = 1800) -> bool:
         """Check if a notification was already sent for this movie (across all libraries).
@@ -415,7 +480,6 @@ class PlexDiscordBot(commands.Bot):
         super().__init__(command_prefix='!', intents=intents)
         self.plex_monitor = PlexMonitor()
         self.notify_channel = None
-
     async def setup_hook(self):
         """Initialize bot and Plex connection."""
         check_latest_version()
@@ -579,6 +643,10 @@ class PlexDiscordBot(commands.Bot):
                         (stored_last_viewed and (last_viewed - stored_last_viewed).total_seconds() > 7200)):
 
                         try:
+                            # Add previous viewing date for rewatch display
+                            if stored_last_viewed:
+                                movie_details['previous_viewed_at'] = stored_last_viewed.isoformat()
+                            
                             embed, file = await self.create_movie_embed(movie_details)
                             view = MovieButtons(
                                 movie_title=movie_details['title'],
@@ -634,6 +702,9 @@ class PlexDiscordBot(commands.Bot):
         """Handle bot startup and channel setup."""
         try:
             logger.info(f"Bot started as: {self.user}")
+            
+            # Set presence as Custom Status
+            await self.change_presence(activity=discord.CustomActivity(name="🎬 Watching Plex"))
             
             max_retries = 3
             retry_delay = 5
