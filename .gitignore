@@ -8,6 +8,10 @@ logs
 # Data directories with generated or sensitive content
 data
 
+docs
+
+tests
+
 # Python-specific files and directories
 __pycache__/
 *.pyc
