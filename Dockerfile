@@ -13,6 +13,8 @@ WORKDIR /app
 
 # requirements.txt kopieren und installieren
 COPY requirements.txt .
+# Install setuptools first (provides distutils for Python 3.12+)
+RUN pip install --no-cache-dir setuptools
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Kopieren des gesamten Projektinhalts
