@@ -4,7 +4,7 @@ from discord.ui import Button, View, Modal, TextInput, Select, Label
 from discord import TextStyle, SelectOption
 import logging
 from datetime import datetime
-import requests
+import cloudscraper
 from letterboxd_integration import login, get_film_id_selenium, save_diary_entry
 
 logger = logging.getLogger('PlexBot')
@@ -121,8 +121,14 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
             tags_text = self.tags.component.value.strip() if self.tags.component.value else ""
             review_text = self.review.component.value.strip() if self.review.component.value else ""
             
-            # Log to Letterboxd
-            session = requests.Session()
+            # Log to Letterboxd with Cloudflare bypass
+            session = cloudscraper.create_scraper(
+                browser={
+                    'browser': 'chrome',
+                    'platform': 'windows',
+                    'mobile': False
+                }
+            )
             session.headers.update({
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
                 "Referer": "https://letterboxd.com/",
