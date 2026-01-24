@@ -2,8 +2,7 @@
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import json
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -71,8 +70,8 @@ def login(session):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
         "Referer": "https://letterboxd.com/",
     }
-    logger.info("Starting login process...")
-    response = session.get("https://letterboxd.com/sign-in/", headers=headers)
+    logger.info("Starting login process with Cloudflare bypass...")
+    response = session.get("https://letterboxd.com/sign-in/", headers=headers, timeout=30)
     soup = BeautifulSoup(response.text, "html.parser")
     csrf_token = soup.find("input", {"name": "__csrf"})["value"] if soup.find("input", {"name": "__csrf"}) else ""
     
@@ -86,8 +85,8 @@ def login(session):
         "__csrf": csrf_token,
         "authenticationCode": ""
     }
-    response = session.post(LOGIN_URL, data=login_data, headers=headers, allow_redirects=True)
-    
+    response = session.post(LOGIN_URL, data=login_data, headers=headers, allow_redirects=True, timeout=30)
+
     try:
         login_response = json.loads(response.text)
         if login_response.get("result") != "success":
@@ -95,8 +94,9 @@ def login(session):
             raise ValueError(f"Letterboxd login failed: {login_response.get('messages', 'Unknown error')}")
         logger.info("Successfully logged in to Letterboxd")
     except json.JSONDecodeError:
-        logger.error("Invalid JSON response during Letterboxd login")
-        raise ValueError("Invalid JSON response during Letterboxd login")
+        logger.error(f"Invalid JSON response during Letterboxd login. Response status: {response.status_code}")
+        logger.debug(f"Response text preview: {response.text[:500]}")
+        raise ValueError("Invalid JSON response during Letterboxd login - Cloudflare may be blocking the request")
     
     return csrf_token
 
@@ -122,11 +122,13 @@ def get_film_id_selenium(session, film_name, film_year, original_title=None, tmd
             tmdb_url = f"https://letterboxd.com/tmdb/{tmdb_id}"
             logger.info(f"Attempting to fetch film ID via TMDb URL: {tmdb_url}")
             headers = {
-                "User-Agent": session.headers['User-Agent'],
+                "User-Agent": session.headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'),
                 "Referer": "https://letterboxd.com/",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
             }
-            response = session.get(tmdb_url, headers=headers, allow_redirects=True)
-            
+            response = session.get(tmdb_url, headers=headers, allow_redirects=True, timeout=30)
+
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
                 # Look for any element with data-film-id attribute (new structure)
@@ -139,20 +141,26 @@ def get_film_id_selenium(session, film_name, film_year, original_title=None, tmd
                     logger.warning(f"No film ID found at TMDb URL: {tmdb_url}, falling back to search")
             else:
                 logger.warning(f"TMDb URL request failed with status {response.status_code}, falling back to search")
+                logger.debug(f"Response text preview: {response.text[:300]}")
         except Exception as e:
             logger.error(f"Error fetching film ID via TMDb ID: {str(e)}, falling back to search")
 
-    # Fallback to existing Selenium-based search
-    logger.info(f"Using fallback search for: {search_title} ({film_year})")
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument(f"user-agent={session.headers['User-Agent']}")
+    # Fallback to existing Selenium-based search with Cloudflare bypass
+    logger.info(f"Using fallback search with undetected Chrome for: {search_title} ({film_year})")
 
-    driver = webdriver.Chrome(options=chrome_options)
+    # Use undetected_chromedriver for better Cloudflare bypass
+    options = uc.ChromeOptions()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+
+    try:
+        driver = uc.Chrome(options=options, version_main=None)
+    except Exception as e:
+        logger.warning(f"Failed to create undetected Chrome driver: {e}, trying with specific version")
+        driver = uc.Chrome(options=options)
     
     try:
         driver.get("https://letterboxd.com")
@@ -210,8 +218,8 @@ def get_film_id_selenium(session, film_name, film_year, original_title=None, tmd
     finally:
         driver.quit()
 
-def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None):
-    """Save a diary entry with rating and adjusted date.
+def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None, rewatch=False, liked=False, tags="", review=""):
+    """Save a diary entry with rating and optional diary fields.
     
     Args:
         session: The requests session with authentication.
@@ -219,6 +227,10 @@ def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None):
         film_id: The Letterboxd film ID.
         rating: The rating value (0.5-5.0).
         viewing_date: Optional ISO format date string.
+        rewatch: Whether this is a rewatch (default False).
+        liked: Whether the user liked the film (default False).
+        tags: Comma-separated tags string (default empty).
+        review: Review text (default empty).
     
     Raises:
         ValueError: If the diary entry fails or response is invalid.
@@ -231,7 +243,6 @@ def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None):
     else:
         viewing_date = get_adjusted_date()
 
-    """Save a diary entry with rating and adjusted date."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
         "Referer": "https://letterboxd.com/",
@@ -247,14 +258,39 @@ def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None):
         "filmId": film_id,
         "specifiedDate": "true",
         "viewingDateStr": viewing_date.strftime("%Y-%m-%d"),
-        "review": "",
-        "tags": "",
+        "review": review,
+        "tags": tags,
         "rating": int(rating * 2),  # Convert to 1-10 scale
-        "liked": "false",
+        "liked": "true" if liked else "false",
+        "rewatch": "true" if rewatch else "false",
         "reviewLanguageCodeHint": "de-DE"
     }
-    logger.info(f"Saving diary entry for film ID {film_id} with rating {rating} for date {viewing_date.strftime('%Y-%m-%d')}")
-    response = session.post(DIARY_URL, data=diary_data, headers=headers)
+    
+    # Parse and add individual tags (Letterboxd expects multiple 'tag' fields)
+    if tags:
+        # Split by comma or space, strip whitespace, filter empty
+        tag_list = [t.strip() for t in tags.replace(',', ' ').split() if t.strip()]
+        for tag in tag_list:
+            # Use list to allow multiple 'tag' keys
+            if 'tag' not in diary_data:
+                diary_data['tag'] = []
+            if isinstance(diary_data.get('tag'), list):
+                diary_data['tag'].append(tag)
+            else:
+                diary_data['tag'] = [diary_data['tag'], tag]
+    
+    logger.info(f"Saving diary entry for film ID {film_id} with rating {rating}, liked={liked}, rewatch={rewatch} for date {viewing_date.strftime('%Y-%m-%d')}")
+    
+    # Convert to proper format for requests (handle multiple tag values)
+    post_data = []
+    for key, value in diary_data.items():
+        if isinstance(value, list):
+            for v in value:
+                post_data.append((key, v))
+        else:
+            post_data.append((key, value))
+    
+    response = session.post(DIARY_URL, data=post_data, headers=headers)
     
     try:
         diary_response = json.loads(response.text)
