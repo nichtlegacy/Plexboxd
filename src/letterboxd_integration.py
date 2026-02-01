@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import json
 import pickle
+import time
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -67,47 +68,27 @@ logger = setup_logging()
 
 COOKIE_FILE = os.path.join("data", "cookies.pkl")
 
-def save_cookies(session, csrf_token):
-    """Save session cookies and CSRF token to file."""
+def save_cookies_from_driver(driver, csrf_token):
+    """Save session cookies from Selenium driver to file."""
     try:
         os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
+        cookies_dict = {c['name']: c['value'] for c in driver.get_cookies()}
         with open(COOKIE_FILE, 'wb') as f:
-            pickle.dump({'cookies': session.cookies, 'csrf_token': csrf_token}, f)
+            pickle.dump({'cookies': cookies_dict, 'csrf_token': csrf_token}, f)
         logger.debug("Cookies and CSRF token saved to file")
     except Exception as e:
         logger.warning(f"Failed to save cookies: {e}")
 
-def load_cookies(session):
-    """Load session cookies from file."""
+def load_cookies_dict():
+    """Load session cookies dict from file."""
     if not os.path.exists(COOKIE_FILE):
         return None
     try:
         with open(COOKIE_FILE, 'rb') as f:
             data = pickle.load(f)
-            session.cookies.update(data.get('cookies', {}))
-            return data.get('csrf_token')
+            return data.get('cookies', {})
     except Exception as e:
         logger.warning(f"Failed to load cookies: {e}")
-        return None
-
-def verify_session(session):
-    """Verify if the current session is logged in."""
-    try:
-        logger.debug("Verifying restored session...")
-        response = session.get("https://letterboxd.com/")
-        soup = BeautifulSoup(response.text, "html.parser")
-
-        # Check for user menu which indicates we are logged in
-        if soup.select(".profile-menu, .has-icon-menu, .nav-account"):
-            logger.info("Session verification successful - user is logged in")
-            # Try to get fresh CSRF token
-            csrf_elem = soup.find("input", {"name": "__csrf"})
-            return csrf_elem["value"] if csrf_elem else None
-
-        logger.info("Session verification failed - not logged in")
-        return None
-    except Exception as e:
-        logger.warning(f"Error verifying session: {e}")
         return None
 
 def create_driver():
@@ -144,24 +125,9 @@ def create_driver():
 def login(session):
     """Perform login to Letterboxd using Selenium and return CSRF token.
 
-    Uses undetected-chromedriver to bypass Cloudflare protection, then transfers
-    cookies to the session object for subsequent HTTP requests.
-    Checks for persisted cookies first to skip login if possible.
+    Uses undetected-chromedriver to bypass Cloudflare protection.
+    Tries to restore session from cookies first.
     """
-    # Try to restore session first
-    stored_csrf = load_cookies(session)
-    if stored_csrf:
-        verified_csrf = verify_session(session)
-        if verified_csrf:
-            # Use the fresh token if we found one, otherwise the stored one (though stored one might be stale)
-            final_csrf = verified_csrf if verified_csrf else stored_csrf
-            if verified_csrf:
-                 # Update file with fresh token if we got one
-                 save_cookies(session, final_csrf)
-            return final_csrf
-        else:
-             logger.info("Restored session invalid, proceeding with full login")
-
     logger.info("Starting login process with undetected Chrome...")
 
     try:
@@ -174,12 +140,51 @@ def login(session):
         # Set realistic viewport
         driver.set_window_size(1920, 1080)
 
-        # Navigate to login page
+        # 1. Navigate to domain first to set context for cookies
+        logger.debug("Navigating to Letterboxd base page...")
+        driver.get("https://letterboxd.com/")
+
+        # 2. Try to load and inject cookies
+        stored_cookies = load_cookies_dict()
+        if stored_cookies:
+            logger.info("Found stored cookies, injecting into browser...")
+            for name, value in stored_cookies.items():
+                try:
+                    driver.add_cookie({'name': name, 'value': value})
+                except Exception as e:
+                    logger.debug(f"Could not add cookie {name}: {e}")
+
+            # Refresh to apply cookies
+            driver.refresh()
+            time.sleep(2)
+
+            # Check if we are logged in
+            try:
+                # Wait briefly for user menu
+                WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".profile-menu, .has-icon-menu, .nav-account")))
+                logger.info("Session restored successfully via cookies!")
+
+                # Get CSRF and sync cookies to session
+                page_source = driver.page_source
+                soup = BeautifulSoup(page_source, "html.parser")
+                csrf_token = soup.find("input", {"name": "__csrf"})["value"] if soup.find("input", {"name": "__csrf"}) else ""
+
+                # Transfer cookies to requests session
+                for cookie in driver.get_cookies():
+                    session.cookies.set(cookie['name'], cookie['value'], domain=cookie.get('domain'))
+
+                # Save fresh cookies
+                save_cookies_from_driver(driver, csrf_token)
+
+                return csrf_token
+            except:
+                logger.info("Restored cookies expired or invalid, proceeding to login...")
+
+        # 3. If restore failed, do full login
         logger.debug("Navigating to Letterboxd sign-in page...")
         driver.get("https://letterboxd.com/sign-in/")
 
         # Wait for page to load completely
-        import time
         time.sleep(2)
 
         # Wait for page to load and find login form
@@ -270,7 +275,7 @@ def login(session):
         logger.debug(f"CSRF token retrieved: {csrf_token[:10]}...")
 
         # Save cookies for next time
-        save_cookies(session, csrf_token)
+        save_cookies_from_driver(driver, csrf_token)
 
         return csrf_token
 
