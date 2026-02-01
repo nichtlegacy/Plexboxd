@@ -21,6 +21,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Kopieren des gesamten Projektinhalts
 COPY . .
 
+# Entrypoint Script ausführbar machen
+RUN chmod +x /app/entrypoint.sh
+
 # Startbefehl
 WORKDIR /app/src
-CMD exec xvfb-run --auto-servernum --server-num=1 --server-args="-screen 0 1920x1080x24" python -u plex_bot.py
+CMD ["/app/entrypoint.sh"]
