@@ -223,7 +223,16 @@ def login(session):
             from selenium.webdriver.common.keys import Keys
             password_field.send_keys(Keys.RETURN)
         else:
-            submit_button.click()
+            # Wait for button to be enabled and use JavaScript click to avoid overlay issues
+            try:
+                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[type='submit']:not([disabled])")))
+                time.sleep(0.5)  # Small delay for any animations
+                driver.execute_script("arguments[0].click();", submit_button)
+            except:
+                # Fallback: try Enter key on password field
+                logger.debug("Button click failed, trying Enter key")
+                from selenium.webdriver.common.keys import Keys
+                password_field.send_keys(Keys.RETURN)
 
         # Wait for navigation after login (similar to letterboxd-graph's delay strategy)
         time.sleep(3)
@@ -431,10 +440,10 @@ def get_film_id_selenium(session, film_name, film_year, original_title=None, tmd
         driver.quit()
 
 def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None, rewatch=False, liked=False, tags="", review=""):
-    """Save a diary entry with rating and optional diary fields.
-    
+    """Save a diary entry with rating and optional diary fields using Selenium.
+
     Args:
-        session: The requests session with authentication.
+        session: The requests session with authentication (used for cookies).
         csrf_token: The CSRF token for the request.
         film_id: The Letterboxd film ID.
         rating: The rating value (0.5-5.0).
@@ -443,7 +452,7 @@ def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None, re
         liked: Whether the user liked the film (default False).
         tags: Comma-separated tags string (default empty).
         review: Review text (default empty).
-    
+
     Raises:
         ValueError: If the diary entry fails or response is invalid.
     """
@@ -455,66 +464,117 @@ def save_diary_entry(session, csrf_token, film_id, rating, viewing_date=None, re
     else:
         viewing_date = get_adjusted_date()
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-        "Referer": "https://letterboxd.com/",
-        "Origin": "https://letterboxd.com",
-        "X-Requested-With": "XMLHttpRequest",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
-    }
-    diary_data = {
-        "json": "true",
-        "__csrf": csrf_token,
-        "viewingId": "",
-        "filmId": film_id,
-        "specifiedDate": "true",
-        "viewingDateStr": viewing_date.strftime("%Y-%m-%d"),
-        "review": review,
-        "tags": tags,
-        "rating": int(rating * 2),  # Convert to 1-10 scale
-        "liked": "true" if liked else "false",
-        "rewatch": "true" if rewatch else "false",
-        "reviewLanguageCodeHint": "de-DE"
-    }
-    
-    # Parse and add individual tags (Letterboxd expects multiple 'tag' fields)
-    if tags:
-        # Split by comma or space, strip whitespace, filter empty
-        tag_list = [t.strip() for t in tags.replace(',', ' ').split() if t.strip()]
-        for tag in tag_list:
-            # Use list to allow multiple 'tag' keys
-            if 'tag' not in diary_data:
-                diary_data['tag'] = []
-            if isinstance(diary_data.get('tag'), list):
-                diary_data['tag'].append(tag)
-            else:
-                diary_data['tag'] = [diary_data['tag'], tag]
-    
     logger.info(f"Saving diary entry for film ID {film_id} with rating {rating}, liked={liked}, rewatch={rewatch} for date {viewing_date.strftime('%Y-%m-%d')}")
-    
-    # Convert to proper format for requests (handle multiple tag values)
-    post_data = []
-    for key, value in diary_data.items():
-        if isinstance(value, list):
-            for v in value:
-                post_data.append((key, v))
-        else:
-            post_data.append((key, value))
-    
-    response = session.post(DIARY_URL, data=post_data, headers=headers)
-    
+
+    # Use Selenium to bypass Cloudflare
     try:
-        diary_response = json.loads(response.text)
-        if diary_response.get("result") is True:
-            logger.info(f"Successfully saved diary entry with {rating} stars")
+        driver = create_driver()
+    except Exception as e:
+        logger.error(f"Failed to initialize Chrome driver for diary entry: {str(e)}")
+        raise ValueError(f"Failed to save diary entry: Chrome driver error")
+
+    try:
+        # Navigate to Letterboxd and inject cookies
+        driver.get("https://letterboxd.com/")
+
+        for cookie in session.cookies:
+            cookie_dict = {'name': cookie.name, 'value': cookie.value}
+            if hasattr(cookie, 'domain') and cookie.domain:
+                cookie_dict['domain'] = cookie.domain
+            try:
+                driver.add_cookie(cookie_dict)
+            except Exception as e:
+                logger.debug(f"Could not add cookie {cookie.name}: {e}")
+
+        driver.refresh()
+        time.sleep(1)
+
+        # Get fresh CSRF token from the current page
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, "html.parser")
+        fresh_csrf = soup.find("input", {"name": "__csrf"})
+        if fresh_csrf and fresh_csrf.get("value"):
+            csrf_token = fresh_csrf["value"]
+            logger.debug("Got fresh CSRF token from page")
         else:
-            error_msg = diary_response.get('messages', 'Unknown error')
-            logger.error(f"Failed to save diary entry: {error_msg}")
-            raise ValueError(f"Failed to save diary entry: {error_msg}")
-    except json.JSONDecodeError:
-        logger.error("Invalid JSON response while saving diary entry")
-        raise ValueError("Invalid JSON response while saving diary entry")
+            logger.warning("Could not find fresh CSRF token, using provided token")
+
+        # Build form data
+        form_data = {
+            "json": "true",
+            "__csrf": csrf_token,
+            "viewingId": "",
+            "filmId": str(film_id),
+            "specifiedDate": "true",
+            "viewingDateStr": viewing_date.strftime("%Y-%m-%d"),
+            "review": review or "",
+            "tags": tags or "",
+            "rating": str(int(rating * 2)),
+            "liked": "true" if liked else "false",
+            "rewatch": "true" if rewatch else "false",
+        }
+
+        # Parse tags into separate fields
+        tag_fields = ""
+        if tags:
+            tag_list = [t.strip() for t in tags.replace(',', ' ').split() if t.strip()]
+            for tag in tag_list:
+                tag_fields += f'formData.append("tag", "{tag}");\n'
+
+        # Use JavaScript fetch to make the POST request from within the browser
+        js_script = f'''
+        return (async function() {{
+            const formData = new URLSearchParams();
+            formData.append("json", "true");
+            formData.append("__csrf", "{csrf_token}");
+            formData.append("viewingId", "");
+            formData.append("filmId", "{film_id}");
+            formData.append("specifiedDate", "true");
+            formData.append("viewingDateStr", "{viewing_date.strftime('%Y-%m-%d')}");
+            formData.append("review", `{review.replace('`', '\\`').replace('$', '\\$') if review else ''}`);
+            formData.append("rating", "{int(rating * 2)}");
+            formData.append("liked", "{str(liked).lower()}");
+            formData.append("rewatch", "{str(rewatch).lower()}");
+            {tag_fields}
+
+            try {{
+                const response = await fetch("{DIARY_URL}", {{
+                    method: "POST",
+                    headers: {{
+                        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Accept": "application/json, text/javascript, */*; q=0.01"
+                    }},
+                    body: formData.toString(),
+                    credentials: "include"
+                }});
+                const text = await response.text();
+                return text;
+            }} catch (e) {{
+                return JSON.stringify({{error: e.toString()}});
+            }}
+        }})();
+        '''
+
+        result = driver.execute_script(js_script)
+
+        try:
+            diary_response = json.loads(result)
+            if diary_response.get("result") is True:
+                logger.info(f"Successfully saved diary entry with {rating} stars")
+            elif diary_response.get("error"):
+                logger.error(f"JavaScript error saving diary entry: {diary_response['error']}")
+                raise ValueError(f"Failed to save diary entry: {diary_response['error']}")
+            else:
+                error_msg = diary_response.get('messages', 'Unknown error')
+                logger.error(f"Failed to save diary entry: {error_msg}")
+                raise ValueError(f"Failed to save diary entry: {error_msg}")
+        except json.JSONDecodeError:
+            logger.error(f"Invalid JSON response while saving diary entry. Response: {result[:500]}")
+            raise ValueError("Invalid JSON response while saving diary entry")
+
+    finally:
+        driver.quit()
 
 def get_adjusted_date():
     """Return adjusted date: previous day if before the configured threshold hour."""
