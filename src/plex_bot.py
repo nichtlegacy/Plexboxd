@@ -40,7 +40,7 @@ LETTERBOXD_LOGO = "https://i.imgur.com/0Yd2L4i.png"
 EMBED_AUTHOR_NAME = "Plex Movie Notification 🎬"
 EMBED_FOOTER_TEXT = "Watched"
 
-CURRENT_VERSION = "1.2.5"
+CURRENT_VERSION = "1.2.6"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MOVIE_DATA_PATH = os.path.join(SCRIPT_DIR, '../data/movie_data.json')
