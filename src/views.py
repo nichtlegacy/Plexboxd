@@ -106,7 +106,7 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
     async def on_submit(self, interaction: discord.Interaction):
         """Handle modal submission and log to Letterboxd."""
         await interaction.response.defer(ephemeral=True)
-        
+
         try:
             # Extract values from components
             assert isinstance(self.rating.component, Select)
@@ -114,42 +114,51 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
             assert isinstance(self.liked.component, Select)
             assert isinstance(self.tags.component, TextInput)
             assert isinstance(self.review.component, TextInput)
-            
+
             rating = float(self.rating.component.values[0])
             is_rewatch = self.rewatch.component.values[0] == 'yes'
             is_liked = self.liked.component.values[0] == 'yes'
             tags_text = self.tags.component.value.strip() if self.tags.component.value else ""
             review_text = self.review.component.value.strip() if self.review.component.value else ""
-            
-            # Log to Letterboxd with Cloudflare bypass
-            session = cloudscraper.create_scraper(
-                browser={
-                    'browser': 'chrome',
-                    'platform': 'windows',
-                    'mobile': False
-                }
-            )
-            session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-                "Referer": "https://letterboxd.com/",
-            })
-            csrf_token = login(session)
-            film_id = get_film_id_selenium(
-                session, self.movie_title, self.movie_year, 
-                self.original_title, tmdb_id=self.tmdb_id
-            )
-            if not film_id:
-                raise ValueError(f"Could not find film ID for '{self.original_title}' ({self.movie_year})")
-            
-            save_diary_entry(
-                session, csrf_token, film_id, rating,
-                viewing_date=self.last_viewed_at,
-                rewatch=is_rewatch,
-                liked=is_liked,
-                tags=tags_text,
-                review=review_text
-            )
-            
+
+            # Run Letterboxd integration in a thread pool to avoid blocking Discord event loop
+            import asyncio
+            from functools import partial
+
+            def letterboxd_sync_operation():
+                # Log to Letterboxd with Cloudflare bypass
+                session = cloudscraper.create_scraper(
+                    browser={
+                        'browser': 'chrome',
+                        'platform': 'windows',
+                        'mobile': False
+                    }
+                )
+                session.headers.update({
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+                    "Referer": "https://letterboxd.com/",
+                })
+                csrf_token = login(session)
+                film_id = get_film_id_selenium(
+                    session, self.movie_title, self.movie_year,
+                    self.original_title, tmdb_id=self.tmdb_id
+                )
+                if not film_id:
+                    raise ValueError(f"Could not find film ID for '{self.original_title}' ({self.movie_year})")
+
+                save_diary_entry(
+                    session, csrf_token, film_id, rating,
+                    viewing_date=self.last_viewed_at,
+                    rewatch=is_rewatch,
+                    liked=is_liked,
+                    tags=tags_text,
+                    review=review_text
+                )
+
+            # Run in thread pool to avoid blocking Discord
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, letterboxd_sync_operation)
+
             # Build success message (matching original format)
             viewed_at_dt = datetime.fromisoformat(self.last_viewed_at) if self.last_viewed_at else datetime.now()
             

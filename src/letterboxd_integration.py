@@ -2,6 +2,7 @@
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 import json
+import pickle
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -64,41 +65,220 @@ def setup_logging():
 
 logger = setup_logging()
 
-def login(session):
-    """Perform login to Letterboxd and return CSRF token."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-        "Referer": "https://letterboxd.com/",
-    }
-    logger.info("Starting login process with Cloudflare bypass...")
-    response = session.get("https://letterboxd.com/sign-in/", headers=headers, timeout=30)
-    soup = BeautifulSoup(response.text, "html.parser")
-    csrf_token = soup.find("input", {"name": "__csrf"})["value"] if soup.find("input", {"name": "__csrf"}) else ""
-    
-    if not csrf_token:
-        logger.error("CSRF token not found!")
-        raise ValueError("CSRF token not found")
+COOKIE_FILE = os.path.join("data", "cookies.pkl")
 
-    login_data = {
-        "username": USERNAME,
-        "password": PASSWORD,
-        "__csrf": csrf_token,
-        "authenticationCode": ""
-    }
-    response = session.post(LOGIN_URL, data=login_data, headers=headers, allow_redirects=True, timeout=30)
+def save_cookies(session, csrf_token):
+    """Save session cookies and CSRF token to file."""
+    try:
+        os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
+        with open(COOKIE_FILE, 'wb') as f:
+            pickle.dump({'cookies': session.cookies, 'csrf_token': csrf_token}, f)
+        logger.debug("Cookies and CSRF token saved to file")
+    except Exception as e:
+        logger.warning(f"Failed to save cookies: {e}")
+
+def load_cookies(session):
+    """Load session cookies from file."""
+    if not os.path.exists(COOKIE_FILE):
+        return None
+    try:
+        with open(COOKIE_FILE, 'rb') as f:
+            data = pickle.load(f)
+            session.cookies.update(data.get('cookies', {}))
+            return data.get('csrf_token')
+    except Exception as e:
+        logger.warning(f"Failed to load cookies: {e}")
+        return None
+
+def verify_session(session):
+    """Verify if the current session is logged in."""
+    try:
+        logger.debug("Verifying restored session...")
+        response = session.get("https://letterboxd.com/")
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Check for user menu which indicates we are logged in
+        if soup.select(".profile-menu, .has-icon-menu, .nav-account"):
+            logger.info("Session verification successful - user is logged in")
+            # Try to get fresh CSRF token
+            csrf_elem = soup.find("input", {"name": "__csrf"})
+            return csrf_elem["value"] if csrf_elem else None
+
+        logger.info("Session verification failed - not logged in")
+        return None
+    except Exception as e:
+        logger.warning(f"Error verifying session: {e}")
+        return None
+
+def create_driver():
+    """Create a Chrome driver with correct options and fallbacks."""
+    def get_options():
+        options = uc.ChromeOptions()
+        # options.add_argument("--headless=new")  # Disabled for Cloudflare bypass with Xvfb
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-setuid-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-accelerated-2d-canvas")
+        options.add_argument("--window-size=1920,1080")
+        return options
 
     try:
-        login_response = json.loads(response.text)
-        if login_response.get("result") != "success":
-            logger.error(f"Letterboxd login failed: {login_response.get('messages', 'Unknown error')}")
-            raise ValueError(f"Letterboxd login failed: {login_response.get('messages', 'Unknown error')}")
-        logger.info("Successfully logged in to Letterboxd")
-    except json.JSONDecodeError:
-        logger.error(f"Invalid JSON response during Letterboxd login. Response status: {response.status_code}")
-        logger.debug(f"Response text preview: {response.text[:500]}")
-        raise ValueError("Invalid JSON response during Letterboxd login - Cloudflare may be blocking the request")
-    
-    return csrf_token
+        # Try using the system driver first (usually matches installed Chromium)
+        logger.debug("Attempting to create driver using system chromedriver...")
+        # Check if running in Docker (Linux) or local (Windows) to adjust path
+        driver_path = '/usr/bin/chromedriver' if os.name == 'posix' else None
+
+        return uc.Chrome(options=get_options(), driver_executable_path=driver_path, version_main=None)
+    except Exception as e:
+        logger.warning(f"Failed to create driver with system executable: {e}. Retrying with auto-download (v144)...")
+        try:
+            # Fallback: try letting uc download, but create FRESH options object
+            # We target 144 as that seems to be the current stable Chrome version on Debian
+            return uc.Chrome(options=get_options(), version_main=144)
+        except Exception as e2:
+            logger.warning(f"Failed to create driver in fallback: {e2}. Retrying with auto-version...")
+            # Last ditch: try without version specification
+            return uc.Chrome(options=get_options())
+
+def login(session):
+    """Perform login to Letterboxd using Selenium and return CSRF token.
+
+    Uses undetected-chromedriver to bypass Cloudflare protection, then transfers
+    cookies to the session object for subsequent HTTP requests.
+    Checks for persisted cookies first to skip login if possible.
+    """
+    # Try to restore session first
+    stored_csrf = load_cookies(session)
+    if stored_csrf:
+        verified_csrf = verify_session(session)
+        if verified_csrf:
+            # Use the fresh token if we found one, otherwise the stored one (though stored one might be stale)
+            final_csrf = verified_csrf if verified_csrf else stored_csrf
+            if verified_csrf:
+                 # Update file with fresh token if we got one
+                 save_cookies(session, final_csrf)
+            return final_csrf
+        else:
+             logger.info("Restored session invalid, proceeding with full login")
+
+    logger.info("Starting login process with undetected Chrome...")
+
+    try:
+        driver = create_driver()
+    except Exception as e:
+        logger.error(f"Failed to initialize Chrome driver: {str(e)}")
+        raise
+
+    try:
+        # Set realistic viewport
+        driver.set_window_size(1920, 1080)
+
+        # Navigate to login page
+        logger.debug("Navigating to Letterboxd sign-in page...")
+        driver.get("https://letterboxd.com/sign-in/")
+
+        # Wait for page to load completely
+        import time
+        time.sleep(2)
+
+        # Wait for page to load and find login form
+        wait = WebDriverWait(driver, 20)
+        username_field = wait.until(EC.presence_of_element_located((By.ID, "field-username")))
+        password_field = driver.find_element(By.ID, "field-password")
+
+        # Fill in credentials
+        logger.debug("Filling login credentials...")
+        username_field.send_keys(USERNAME)
+        password_field.send_keys(PASSWORD)
+
+        # Try multiple selectors for the submit button
+        submit_button = None
+        submit_selectors = [
+            "input[type='submit']",
+            "button[type='submit']",
+            ".submit",
+            "input.button",
+            "button.button",
+            ".button.-action"
+        ]
+
+        for selector in submit_selectors:
+            try:
+                submit_button = driver.find_element(By.CSS_SELECTOR, selector)
+                logger.debug(f"Found submit button with selector: {selector}")
+                break
+            except:
+                continue
+
+        if not submit_button:
+            logger.error("Could not find submit button with any known selector")
+            # Try submitting the form directly by pressing Enter on password field
+            logger.debug("Attempting to submit by pressing Enter on password field")
+            from selenium.webdriver.common.keys import Keys
+            password_field.send_keys(Keys.RETURN)
+        else:
+            submit_button.click()
+
+        # Wait for navigation after login (similar to letterboxd-graph's delay strategy)
+        time.sleep(3)
+
+        # Check for error messages
+        try:
+            error_element = driver.find_element(By.CSS_SELECTOR, ".error-message, .form-error, .notice.error")
+            if error_element.is_displayed():
+                error_msg = error_element.text
+                logger.error(f"Login failed with error message: {error_msg}")
+                raise ValueError(f"Letterboxd login failed: {error_msg}")
+        except:
+            # No error element found or not displayed - login likely successful
+            pass
+
+        # Verify we're logged in by checking for user-specific elements
+        # (similar to how letterboxd-graph waits for specific selectors)
+        try:
+            # Wait for the user menu or account link to appear (indicates successful login)
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".profile-menu, .has-icon-menu")))
+            logger.info("Login verification successful - user menu detected")
+        except:
+            logger.warning("Could not verify login by user menu, proceeding anyway")
+
+        # Additional delay for any dynamic content (matching letterboxd-graph's 1500ms delay)
+        time.sleep(1.5)
+
+        # Transfer cookies from Selenium to requests session
+        logger.debug("Transferring cookies from Selenium to session...")
+        for cookie in driver.get_cookies():
+            session.cookies.set(cookie['name'], cookie['value'], domain=cookie.get('domain'))
+
+        logger.info("Successfully logged in to Letterboxd via Selenium")
+
+        # Get CSRF token from the page after login
+        driver.get("https://letterboxd.com/")
+
+        # Wait for page load
+        time.sleep(1)
+
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, "html.parser")
+        csrf_token = soup.find("input", {"name": "__csrf"})["value"] if soup.find("input", {"name": "__csrf"}) else ""
+
+        if not csrf_token:
+            logger.error("CSRF token not found after login!")
+            raise ValueError("CSRF token not found")
+
+        logger.debug(f"CSRF token retrieved: {csrf_token[:10]}...")
+
+        # Save cookies for next time
+        save_cookies(session, csrf_token)
+
+        return csrf_token
+
+    except Exception as e:
+        logger.error(f"Error during Selenium login: {str(e)}")
+        raise
+    finally:
+        driver.quit()
 
 def get_film_id_selenium(session, film_name, film_year, original_title=None, tmdb_id=None):
     """Retrieve film ID from Letterboxd using TMDb ID or search.
@@ -116,62 +296,89 @@ def get_film_id_selenium(session, film_name, film_year, original_title=None, tmd
     search_title = original_title if original_title else film_name
     logger.info(f"Searching for film: {search_title} ({film_year}) with TMDb ID: {tmdb_id}")
 
-    # Try TMDb ID approach first if available
-    if tmdb_id:
-        try:
-            tmdb_url = f"https://letterboxd.com/tmdb/{tmdb_id}"
-            logger.info(f"Attempting to fetch film ID via TMDb URL: {tmdb_url}")
-            headers = {
-                "User-Agent": session.headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'),
-                "Referer": "https://letterboxd.com/",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-            }
-            response = session.get(tmdb_url, headers=headers, allow_redirects=True, timeout=30)
-
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, "html.parser")
-                # Look for any element with data-film-id attribute (new structure)
-                film_element = soup.find(attrs={"data-film-id": True})
-                if film_element:
-                    film_id = film_element['data-film-id']
-                    logger.info(f"Film ID found via TMDb ID: {film_id}")
-                    return film_id
-                else:
-                    logger.warning(f"No film ID found at TMDb URL: {tmdb_url}, falling back to search")
-            else:
-                logger.warning(f"TMDb URL request failed with status {response.status_code}, falling back to search")
-                logger.debug(f"Response text preview: {response.text[:300]}")
-        except Exception as e:
-            logger.error(f"Error fetching film ID via TMDb ID: {str(e)}, falling back to search")
-
-    # Fallback to existing Selenium-based search with Cloudflare bypass
-    logger.info(f"Using fallback search with undetected Chrome for: {search_title} ({film_year})")
-
-    # Use undetected_chromedriver for better Cloudflare bypass
-    options = uc.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--window-size=1920,1080")
-
+    # Use Selenium for all requests to avoid Cloudflare 403 errors
     try:
-        driver = uc.Chrome(options=options, version_main=None)
+        driver = create_driver()
     except Exception as e:
-        logger.warning(f"Failed to create undetected Chrome driver: {e}, trying with specific version")
-        driver = uc.Chrome(options=options)
-    
+        logger.error(f"Failed to initialize Chrome driver: {str(e)}")
+        # If we can't create a driver, we can't search
+        return None
+
     try:
+        # Load Letterboxd and transfer cookies
         driver.get("https://letterboxd.com")
         for cookie in session.cookies:
-            driver.add_cookie({
+            cookie_dict = {
                 'name': cookie.name,
                 'value': cookie.value,
-                'domain': cookie.domain,
-                'path': cookie.path,
-            })
-        
+            }
+            # Add optional fields if they exist
+            if hasattr(cookie, 'domain') and cookie.domain:
+                cookie_dict['domain'] = cookie.domain
+            if hasattr(cookie, 'path') and cookie.path:
+                cookie_dict['path'] = cookie.path
+
+            try:
+                driver.add_cookie(cookie_dict)
+            except Exception as e:
+                logger.debug(f"Could not add cookie {cookie.name}: {e}")
+                continue
+
+        # Try TMDb ID approach first if available (using Selenium to avoid 403)
+        if tmdb_id:
+            try:
+                import time
+                tmdb_url = f"https://letterboxd.com/tmdb/{tmdb_id}"
+                logger.info(f"Fetching film ID via TMDb URL with Selenium: {tmdb_url}")
+
+                driver.get(tmdb_url)
+
+                # Wait longer for redirect (Docker environments may be slower)
+                wait = WebDriverWait(driver, 15)
+                time.sleep(5)  # Increased wait for redirect/dynamic content
+
+                # Check if we were redirected to a film page
+                current_url = driver.current_url
+                logger.debug(f"Current URL after TMDb redirect: {current_url}")
+
+                # Check page title to see if Cloudflare challenge is present
+                page_title = driver.title
+                logger.debug(f"Page title: {page_title}")
+
+                # Log page source snippet to debug
+                page_source = driver.page_source
+                if "cloudflare" in page_source.lower() or "challenge" in page_source.lower():
+                    logger.warning("Cloudflare challenge detected on TMDb page")
+                    logger.debug(f"Page source preview: {page_source[:500]}")
+
+                if "/film/" in current_url:
+                    # We were redirected to the film page, try to find the film ID
+                    try:
+                        # Wait for an element with data-film-id to appear
+                        film_elem = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-film-id]")))
+                        film_id = film_elem.get_attribute("data-film-id")
+                        logger.info(f"Film ID found via TMDb ID using Selenium: {film_id}")
+                        return film_id
+                    except Exception as elem_error:
+                        logger.warning(f"Could not find element with data-film-id: {elem_error}")
+                        # Fallback: try parsing page source
+                        page_source = driver.page_source
+                        soup = BeautifulSoup(page_source, "html.parser")
+                        film_element = soup.find(attrs={"data-film-id": True})
+                        if film_element:
+                            film_id = film_element['data-film-id']
+                            logger.info(f"Film ID found via TMDb ID from page source: {film_id}")
+                            return film_id
+                        else:
+                            logger.warning(f"No film ID found at TMDb URL, falling back to search")
+                else:
+                    logger.warning(f"TMDb URL did not redirect to film page (got {current_url}), falling back to search")
+            except Exception as e:
+                logger.error(f"Error fetching film ID via TMDb URL: {str(e)}, falling back to search")
+
+        # Fallback to search
+        logger.info(f"Using search for: {search_title} ({film_year})")
+
         search_query = f"{search_title} {film_year}".replace(" ", "+")
         search_url = f"https://letterboxd.com/search/films/{search_query}/"
         logger.debug(f"Opening search: {search_url}")
