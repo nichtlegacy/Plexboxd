@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
 
 ENV CHROME_BIN=/usr/bin/chromium
 ENV CHROME_DRIVER=/usr/bin/chromedriver
+ENV PYTHONUNBUFFERED=1
 
 # Arbeitsverzeichnis
 WORKDIR /app
@@ -21,4 +22,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Startbefehl
-CMD ["xvfb-run", "--auto-servernum", "--server-num=1", "--server-args=-screen 0 1920x1080x24", "python", "src/plex_bot.py"]
+WORKDIR /app/src
+CMD ["xvfb-run", "--auto-servernum", "--server-num=1", "--server-args=-screen 0 1920x1080x24", "python", "plex_bot.py"]
