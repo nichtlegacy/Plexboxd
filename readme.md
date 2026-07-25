@@ -1,337 +1,479 @@
+<div align="center">
+
 # Plexboxd
 
-[![GitHub release](https://img.shields.io/github/release/nichtlegacy/plexboxd.svg?style=flat-square)](https://github.com/nichtlegacy/plexboxd/releases/latest)
-![Made with Python](https://img.shields.io/badge/Made%20with-Python-3776AB?style=flat-square&logo=python&logoColor=white)
-![Discord](https://img.shields.io/badge/Discord-Bot-5865F2?style=flat-square&logo=discord&logoColor=white)
-![Plex](https://img.shields.io/badge/Plex-Server-E5A00D?style=flat-square&logo=plex&logoColor=white)
-![Letterboxd](https://img.shields.io/badge/Letterboxd-Integration-00D735?style=flat-square)
-![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
+**Rate the film you just watched on Plex from Discord — and have it land in your Letterboxd diary.**
+Self-hosted Discord bot, SQLite job queue, no Letterboxd API key required.
 
+[![Release](https://img.shields.io/github/v/release/nichtlegacy/plexboxd?style=flat-square)](https://github.com/nichtlegacy/plexboxd/releases/latest)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/nichtlegacy/plexboxd/pkgs/container/plexboxd)
+[![Plex](https://img.shields.io/badge/Plex-Media%20Server-E5A00D?style=flat-square&logo=plex&logoColor=white)](https://www.plex.tv)
+[![Letterboxd](https://img.shields.io/badge/Letterboxd-Diary-00D735?style=flat-square&logo=letterboxd&logoColor=white)](https://letterboxd.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](./LICENSE)
 
-Plexboxd is a Discord bot that automatically tracks movies watched on Plex and integrates with Letterboxd to log and rate them. It monitors your Plex server for watched content and sends an embed with all necessary information to a Discord channel, allowing you to rate films directly from Discord - which then automatically adds them to your Letterboxd diary.
+[Overview](#overview) • [Quick Start](#quick-start) • [Configuration](#configuration) • [Architecture](#architecture) • [Operations](#operations) • [Troubleshooting](#troubleshooting)
 
-![Plexboxd Notification Example](https://i.imgur.com/Sm9RIqc.png)
+![Plexboxd notification in Discord](./assets/hero.png)
+
+</div>
+
+## Overview
+
+Plexboxd watches your Plex server's playback history. When you finish a film, it posts a Discord
+embed with poster, runtime, genres, director and library. One button opens a modal where you set
+rating, rewatch, like, tags and a review — and the bot writes that diary entry to Letterboxd for you.
+
+The write path is deliberate about two things:
+
+- **Every rating is a durable job.** The modal enqueues a row in SQLite; a worker claims it, resolves
+  the film, writes it, then verifies what Letterboxd echoed back. Nothing is reported as successful
+  until the stored rating, like flag, rewatch flag and diary date all match what you asked for.
+- **Only the login needs a browser.** Cloudflare challenges headless Chrome on `letterboxd.com`, so
+  [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) drives a real headful Chromium
+  (against Xvfb in Docker) once, to mint the `cf_clearance` cookie. That session is persisted and
+  reused, so a normal rating is a plain HTTP POST that takes a second or two with no browser launch.
+
+**What it is not:** it is not a Letterboxd API client (there is no public write API), not a
+multi-user service — it tracks one Plex user and posts to one Discord channel — and it handles
+films only, not TV.
 
 ## Features
 
-- 🎬 **Plex Integration**: Monitors your Plex server for newly watched movies
-- 🤖 **Discord Notifications**: Sends an embed with all necessary movie information to a Discord channel when you finish watching a film
-- ⭐ **Letterboxd Integration**: Rate movies directly from Discord with seamless Letterboxd logging
-- 📊 **Watch History**: Keeps track of your viewing history with timestamps and rating data
-- 🌙 **Date Threshold**: Configurable time threshold to determine if late-night watches count for the current or previous day
-- 📚 **Multi-Library Support**: Correctly identifies which library a movie was played from, even with duplicates across libraries
-- 🚫 **Library Exclusion**: Exclude specific libraries from notifications (e.g., 4K or Kids libraries)
+- **Plex history monitoring** — polls `history()` every 15 minutes, filtered to your account, and
+  correctly reports which library a film was actually played from
+- **Rich Discord notifications** — poster attachment, duration, genres, director, rating, library, and
+  view count plus previous watch date on rewatches
+- **Full diary entry modal** — rating in half-star steps, rewatch, like, tags and a 1000-character
+  review, with rewatch pre-selected when the film is already in your history
+- **Verified writes** — the response from Letterboxd is compared field by field against the request;
+  a mismatch fails the job instead of silently recording a wrong rating
+- **Durable job queue** — ratings survive restarts, are claimed by exactly one worker, and are
+  inspectable and retryable from the CLI
+- **Idempotent by design** — one watch event per `(rating_key, watched_at)`, one successful result per
+  watch event, duplicate notifications suppressed across libraries
+- **Film match caching** — TMDb redirect first, search fallback, and the resolved Letterboxd LID is
+  cached so repeat ratings skip lookup entirely
+- **Late-night date handling** — `DATE_THRESHOLD_HOUR` assigns a 03:00 finish to the previous day
+- **Library exclusion** — keep 4K or Kids libraries out of your notifications
+- **Live button state** — the button reflects queued, `Rated 4.0 ★ …`, or a red retry state on failure
+- **Discord log forwarding** — optional webhook mirror of the bot log
+
+## How It Works
+
+```mermaid
+flowchart LR
+    Plex["Plex history()"] -->|poll 15 min| Bot["Discord bot"]
+    Bot --> Embed["Channel embed + button"]
+    Embed -->|modal submit| Queue[("rating_jobs<br/>plexboxd.db")]
+    Queue -->|claim| Worker["Rating worker"]
+    Worker --> Match["Match: cache → TMDb → search"]
+    Match --> Write["POST /api/v0/production-log-entries"]
+    Write --> Verify["Verify echoed fields"]
+    Verify --> Diary["Letterboxd diary"]
+    Verify --> Result[("rating_results")]
+    Result --> Embed
+```
+
+1. **Detect.** Recently watched films (within 30 minutes, your account, not currently playing, not in
+   an excluded library) become a `watch_event`, keyed on rating key plus watch timestamp.
+2. **Notify.** An embed with a `📝 Diary Entry` button goes to `NOTIFY_CHANNEL_ID`, optionally
+   mentioning `DISCORD_USER_ID`. The Discord message id is recorded so state can be restored after a
+   restart.
+3. **Queue.** Submitting the modal enqueues a `rating_job` and immediately confirms with an ephemeral
+   reply — Discord never waits on Letterboxd.
+4. **Match.** The worker resolves the film via the cached LID, then `letterboxd.com/tmdb/<id>`, then
+   film search. The base-62 LID from `/film/<slug>/json/` is what the write API needs; the numeric
+   film id is rejected there.
+5. **Write.** A single `POST /api/v0/production-log-entries` carries rating, like, rewatch, diary date,
+   tags and review. If Cloudflare blocks it, the browser refreshes the session and the write is
+   retried over HTTP; only if that fails too does the browser perform the write itself.
+6. **Verify and report.** Rating, like, rewatch and diary date from the response are compared against
+   the request. On success the button becomes `Rated 4.0 ★ …`; on failure it turns into a red
+   **Retry Diary Entry**.
 
 ## Requirements
 
-- Python 3.7+
-- Node.js 20+
-- A Discord account and a Discord server where you have admin permissions
-- A Plex Media Server
-- A Letterboxd account
+| | |
+|---|---|
+| Python | 3.11 or newer (3.12 used in the image and CI) |
+| Node.js | 18 or newer — runs Patchright for the Letterboxd login |
+| Chromium | System Chromium or Chrome; headful, so a display or Xvfb is needed |
+| Plex | Plex Media Server plus an auth token |
+| Discord | A bot application, and admin rights on the target server |
+| Letterboxd | Account username and password |
 
-## Installation
+Docker covers Node, Chromium and Xvfb for you.
 
-1. Clone the repository
+## Quick Start
+
+### Docker Compose (recommended)
+
 ```bash
 git clone https://github.com/nichtlegacy/plexboxd.git
 cd plexboxd
-```
-
-2. Install the required dependencies
-```bash
-pip install -r requirements.txt
-npm install
-```
-
-3. Create a `.env` file based on the provided `.env.example`
-```bash
 cp .env.example .env
+$EDITOR .env          # fill in the required values, see Configuration
+mkdir -p data logs
+docker compose up -d
+docker compose logs -f
 ```
 
-4. Fill in the required environment variables in the `.env` file (see Configuration section)
+The bundled [docker-compose.yml](./docker-compose.yml) pulls `ghcr.io/nichtlegacy/plexboxd:latest`
+and mounts `./data` and `./logs`.
 
-5. Start the bot
-```bash
-python src/plex_bot.py
+A healthy first start logs roughly this, in order:
+
+```
+Running version: v1.3.0 | Latest Version: v1.3.0
+Attempting Plex connection 1/7...
+Plex connection established
+Bot started as: YourBot#1234
+Notification channel found: #plex-notifications
+Restoring dropdown menus for recent movies...
 ```
 
-## Docker Support
+Then watch a film. Within 15 minutes an embed appears in your channel.
 
-Plexboxd now supports running in a Docker container, making it easier to deploy and manage on any system that supports Docker. The official image is available on GitHub Container Registry (GHCR) at `ghcr.io/nichtlegacy/plexboxd:latest`.
+> **Keep `./data` mounted.** It holds `plexboxd.db`, the Letterboxd session cookies and the Chromium
+> profile. Losing it means a fresh browser login on the next rating.
 
-### Running with Docker
-
-You can run Plexboxd using Docker in two ways: via the `docker run` command or with a `docker-compose.yml` file (recommended for easier configuration and persistence).
-
-#### Prerequisites for Docker
-- Docker installed on your system ([Install Docker](https://docs.docker.com/get-docker/))
-- (Optional) Docker Compose installed for using `docker-compose.yml` ([Install Docker Compose](https://docs.docker.com/compose/install/))
-
-#### Option 1: Using `docker run`
-Pull the latest image and run it with your environment variables:
+### Docker without Compose
 
 ```bash
 docker run -d \
   --name plexboxd \
   --restart unless-stopped \
-  -e DISCORD_TOKEN="your-discord-token" \
-  -e DISCORD_LOGGING_WEBHOOK_URL="your-webhook-url" \
-  -e DISCORD_USER_ID="your-user-id" \
-  -e PLEX_USERNAME="your-plex-username" \
-  -e PLEX_TOKEN="your-plex-token" \
-  -e PLEX_SERVER_URL="http://your-plex-server:32400" \
-  -e EXCLUDED_LIBRARIES="" \
-  -e NOTIFY_CHANNEL_ID="your-channel-id" \
-  -e GUILD_ID="your-guild-id" \
-  -e LETTERBOXD_USERNAME="your-letterboxd-username" \
-  -e LETTERBOXD_PASSWORD="your-letterboxd-password" \
-  -e DATE_THRESHOLD_HOUR="7" \
-  -v /path/to/your/logs:/app/logs \
-  -v /path/to/your/data:/app/data \
+  --env-file .env \
+  -v /path/to/plexboxd/data:/app/data \
+  -v /path/to/plexboxd/logs:/app/logs \
   ghcr.io/nichtlegacy/plexboxd:latest
 ```
 
-Replace `/path/to/your/logs` and `/path/to/your/data` with actual paths on your host system (e.g., `/mnt/user/appdata/plexboxd/logs` and `/mnt/user/appdata/plexboxd/data`).
+On Unraid, host paths are typically `/mnt/user/appdata/plexboxd/data` and `…/logs`.
 
-#### Option 2: Using Docker Compose (Recommended)
-Using `docker-compose` simplifies configuration by allowing you to use a `.env` file and manage persistent volumes more easily. Below is an example `docker-compose.yml`:
+### Local development
 
-```yaml
-version: '3.8'
-
-services:
-  plexboxd:
-    image: ghcr.io/nichtlegacy/plexboxd:latest
-    container_name: plexboxd
-    restart: unless-stopped
-    env_file:
-      - .env
-    volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
+```bash
+git clone https://github.com/nichtlegacy/plexboxd.git
+cd plexboxd
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+npm install                     # Patchright, for the Letterboxd login
+cp .env.example .env && $EDITOR .env
+python3 src/plex_bot.py
 ```
 
-##### Steps to Use Docker Compose
-1. Save the above content in a file named `docker-compose.yml`.
-2. Create a `.env` file in the same directory with the following variables (see [Configuration](#configuration) for details):
+On Linux without a desktop session, install `xvfb` — the browser login is headful and
+[browser_fallback.py](./src/plexboxd/integrations/letterboxd/browser_fallback.py) will wrap Chromium
+in `xvfb-run` automatically when no `DISPLAY` is set.
 
-   ```bash
-   DISCORD_TOKEN=your-discord-token
-   DISCORD_LOGGING_WEBHOOK_URL=your-webhook-url
-   DISCORD_USER_ID=your-user-id
-   PLEX_USERNAME=your-plex-username
-   PLEX_TOKEN=your-plex-token
-   PLEX_SERVER_URL=http://your-plex-server:32400
-   EXCLUDED_LIBRARIES=
-   NOTIFY_CHANNEL_ID=your-channel-id
-   GUILD_ID=your-guild-id
-   LETTERBOXD_USERNAME=your-letterboxd-username
-   LETTERBOXD_PASSWORD=your-letterboxd-password
-   DATE_THRESHOLD_HOUR=7
-   LETTERBOXD_BROWSER_PACKAGE=patchright
-   LETTERBOXD_BROWSER_PROFILE_DIR=data/letterboxd-browser-profile
-   LETTERBOXD_BROWSER_HEADLESS=false
-   LETTERBOXD_BROWSER_AUTH=true
-   LETTERBOXD_BROWSER_FALLBACK=true
-   LETTERBOXD_MAX_RETRIES=3
-   LETTERBOXD_BASE_BACKOFF_SECONDS=5.0
-   LETTERBOXD_TIMEOUT_SECONDS=20
-   LETTERBOXD_IMPERSONATE=
-   ```
+Verify the Letterboxd side on its own before relying on the bot:
 
-3. (Optional, but recommended) Create the `logs` and `data` directories for persistence:
-   ```bash
-   mkdir logs data
-   ```
-
-4. Start the container:
-   ```bash
-   docker-compose up -d
-   ```
-
-5. To stop it:
-   ```bash
-   docker-compose down
-   ```
-
-#### Persistent Volumes
-To ensure logs and data (like `movie_data.db`) persist across container restarts, map the following volumes:
-- **Logs**: Host path (e.g., `./logs`) to container path `/app/logs`
-- **Data**: Host path (e.g., `./data`) to container path `/app/data`
-
-These mappings are included in the `docker-compose.yml` example above. Adjust the host paths to suit your system (e.g., `/mnt/user/appdata/plexboxd/logs` on Unraid).
+```bash
+python3 src/plexboxd_cli.py bootstrap-session   # logs in via browser, persists cookies
+python3 src/plexboxd_cli.py verify-session      # confirms the session still works
+```
 
 ## Configuration
 
-### Environment Variables
+All settings come from the environment, loaded from `.env` in the project root. Start from
+[.env.example](./.env.example), which documents every variable inline.
 
-The `.env` file contains all the necessary configuration parameters:
+Startup aborts with a named error if a required variable is missing, rather than failing later:
 
-#### Discord Configuration
-- `DISCORD_TOKEN`: Your Discord bot token from the [Discord Developer Portal](https://discord.com/developers/applications)
-- `DISCORD_LOGGING_WEBHOOK_URL`: Webhook URL for sending logs to a Discord channel
-- `NOTIFY_CHANNEL_ID`: ID of the Discord channel where movie notifications will be sent
-- `GUILD_ID`: ID of your Discord server
-- `DISCORD_USER_ID`: Your Discord user ID to be notified when a movie is watched
+```
+Configuration error: PLEX_TOKEN is not set. Check your .env file (see .env.example) or the container environment.
+```
 
-#### Plex Configuration
-- `PLEX_USERNAME`: Your Plex account username
-- `PLEX_TOKEN`: Your Plex authentication token
-- `PLEX_SERVER_URL`: URL of your Plex server (e.g., `http://192.168.1.100:32400`)
-- `EXCLUDED_LIBRARIES`: Comma-separated list of library names to exclude from notifications (e.g., `4K Movies,Kids Movies`)
+### Discord
 
-#### Letterboxd Configuration
-- `LETTERBOXD_USERNAME`: Your Letterboxd username
-- `LETTERBOXD_PASSWORD`: Your Letterboxd password
-- `DATE_THRESHOLD_HOUR`: Hour (in 24-hour format) to determine the cutoff for assigning movie watch dates (default: 7)
-- `LETTERBOXD_BROWSER_PACKAGE`: Preferred Node package for authenticated browser automation (`patchright` recommended)
-- `LETTERBOXD_BROWSER_PROFILE_DIR`: Persistent browser profile path used for stable session reuse in Docker
-- `LETTERBOXD_BROWSER_HEADLESS`: Run authenticated browser automation headless (`false` recommended for Letterboxd)
-- `LETTERBOXD_BROWSER_AUTH`: Use the browser flow for session bootstrap and verification
-- `LETTERBOXD_BROWSER_FALLBACK`: Allow the browser to refresh the session (and write as a last resort) when the direct HTTP write is blocked
-- `LETTERBOXD_MAX_RETRIES`: Maximum retries for a single diary operation
-- `LETTERBOXD_BASE_BACKOFF_SECONDS`: Base backoff (with exponential retry and jitter)
-- `LETTERBOXD_TIMEOUT_SECONDS`: HTTP and browser wait timeout
-- `LETTERBOXD_IMPERSONATE`: Optional comma-separated `curl_cffi` impersonation profiles. Leave empty for the verified default (`chrome136,firefox135,safari184`)
+| Variable | Required | Description |
+|---|---|---|
+| `DISCORD_TOKEN` | yes | Bot token from the [Discord Developer Portal](https://discord.com/developers/applications) |
+| `NOTIFY_CHANNEL_ID` | yes | Channel that receives film notifications |
+| `GUILD_ID` | yes | Your Discord server id |
+| `DISCORD_USER_ID` | no | Mentioned in each notification |
+| `DISCORD_LOGGING_WEBHOOK_URL` | no | Mirrors the bot log into a Discord channel |
 
-### How to Get Required Tokens
+### Plex
 
-#### Discord Bot Token
-1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
-2. Create a new application
-3. Go to the "Bot" tab and create a bot
-4. Copy the token and add it to your `.env` file
+| Variable | Required | Description |
+|---|---|---|
+| `PLEX_SERVER_URL` | yes | e.g. `http://192.168.1.100:32400` |
+| `PLEX_TOKEN` | yes | Plex auth token |
+| `PLEX_USERNAME` | yes | Matched against Plex accounts so only your watches count |
+| `EXCLUDED_LIBRARIES` | no | Comma-separated library names, e.g. `4K Movies,Kids Movies` |
 
-#### Discord Channel and Guild IDs
-1. Enable Developer Mode in Discord (User Settings > Advanced > Developer Mode)
-2. Right-click on your server icon and select "Copy ID" for the Guild ID
-3. Right-click on the notification channel and select "Copy ID" for the Channel ID
+### Letterboxd
 
-#### Plex Token
-1. Log in to your Plex Web App
-2. Play any media item
-3. Right-click anywhere and choose "View Page Source"
-4. Search for "X-Plex-Token" and copy the token value
+| Variable | Default | Description |
+|---|---|---|
+| `LETTERBOXD_USERNAME` | — | Required |
+| `LETTERBOXD_PASSWORD` | — | Required |
+| `DATE_THRESHOLD_HOUR` | `7` | Watches finishing before this hour are logged as the previous day |
+
+### Letterboxd runtime and Cloudflare
+
+Defaults are the verified configuration. Change these only when debugging.
+
+| Variable | Default | Description |
+|---|---|---|
+| `LETTERBOXD_BROWSER_PACKAGE` | `patchright` | Node package driving Chromium |
+| `LETTERBOXD_BROWSER_PROFILE_DIR` | `data/letterboxd-browser-profile` | Persistent Chromium profile; keep it inside the mounted `data/` |
+| `LETTERBOXD_BROWSER_HEADLESS` | `false` | Leave off — Cloudflare challenges headless Chrome, and the bot warns if you enable it |
+| `LETTERBOXD_BROWSER_AUTH` | `true` | Bootstrap and verify the session through the browser instead of HTTP login |
+| `LETTERBOXD_BROWSER_FALLBACK` | `true` | Let the browser refresh the session, and write as a last resort, when an HTTP write is blocked |
+| `LETTERBOXD_IMPERSONATE` | *(empty)* | `curl_cffi` profiles, tried in order. Empty means `chrome136,firefox135,safari184`. Do not use `chrome120` or the bare `chrome` alias — both get challenged |
+| `LETTERBOXD_MAX_RETRIES` | `3` | Retries per Letterboxd operation |
+| `LETTERBOXD_BASE_BACKOFF_SECONDS` | `5.0` | Base for exponential backoff with jitter |
+| `LETTERBOXD_TIMEOUT_SECONDS` | `20` | HTTP and browser wait timeout |
+| `LETTERBOXD_SESSION_FILE` | `data/letterboxd_cookies.json` | Persisted cookie bundle |
+| `LETTERBOXD_BROWSER_CHANNEL` | *(auto)* | Chromium channel override; auto-detected from the executable |
+| `CHROME_BIN` | *(auto)* | Explicit Chromium path when auto-detection fails |
+| `PLEXBOXD_ROOT` | *(auto)* | Overrides the project root used to anchor `data/`, `logs/` and `node_modules/` |
+| `PLEXBOXD_LOG_DIR` | `logs` | Log directory; relative paths are resolved from the project root |
+
+### Getting the tokens
+
+<details>
+<summary><b>Discord bot token, channel id and guild id</b></summary>
+
+1. Create an application at the [Discord Developer Portal](https://discord.com/developers/applications),
+   add a bot, and copy the token into `DISCORD_TOKEN`.
+2. Enable **Message Content Intent** under *Bot → Privileged Gateway Intents*.
+3. Invite the bot with permission to view the channel, send messages and attach files.
+4. Enable *User Settings → Advanced → Developer Mode*, then right-click your server for `GUILD_ID`,
+   the target channel for `NOTIFY_CHANNEL_ID`, and your own profile for `DISCORD_USER_ID`.
+</details>
+
+<details>
+<summary><b>Plex token</b></summary>
+
+Open any library item in Plex Web, choose **Get Info → View XML**, and copy the `X-Plex-Token`
+value from the URL.
+</details>
+
+## Architecture
+
+Application code lives in [src/plexboxd/](./src/plexboxd/), split by layer. The Discord bot is the
+only part that talks to Plex and Discord; everything about rating a film goes through the queue.
+
+- **[domain/](./src/plexboxd/domain/)** — frozen dataclasses and enums. `RatingRequest` rejects
+  anything outside 0.5–5.0 in half-star steps; `RatingJob.can_transition_to` is the single source of
+  truth for the status machine.
+- **[application/](./src/plexboxd/application/)** — services with no I/O of their own: watch ingest,
+  job enqueue and claim, match resolution, and rating execution.
+- **[integrations/letterboxd/](./src/plexboxd/integrations/letterboxd/)** — session provider
+  (`curl_cffi` with browser impersonation), matcher, writer, verifier, and the Patchright browser
+  client plus its [Node script](./src/plexboxd/integrations/letterboxd/scripts/letterboxd_browser.cjs).
+- **[infrastructure/](./src/plexboxd/infrastructure/)** — SQLite connection, versioned migrations,
+  repositories, the job worker, clock and id factories.
+- **[interfaces/](./src/plexboxd/interfaces/)** — the CLI and the standalone worker entrypoint.
+
+### Job lifecycle
+
+In practice a job runs `pending → running → succeeded`, or `pending → running → failed` and back to
+`pending` via `retry-job`. `RatingJob.can_transition_to` also permits `matched`, `manual_action` and
+`cancelled` — those are declared for future use and no current code path sets them.
+
+Claiming is a conditional `UPDATE … WHERE job_lock_owner IS NULL`, so two workers cannot take the same
+job. `enqueue` returns the existing job if one is already active for that watch event, and raises
+`RatingJobAlreadyCompletedError` once a successful result exists — rating the same film twice is a
+no-op rather than a duplicate diary entry.
+
+### Data model
+
+Migrations under
+[infrastructure/db/schema/](./src/plexboxd/infrastructure/db/schema/) apply automatically at startup
+and are tracked in `schema_migrations`.
+
+| Table | Purpose |
+|---|---|
+| `watch_events` | One row per watch, unique on `(plex_rating_key, watched_at)` |
+| `notifications` | Discord channel/message ids and view state per watch event |
+| `rating_jobs` | Queue rows: requested rating, like, rewatch, tags, review, status, lock owner |
+| `rating_attempts` | One row per try, with match and write strategy, error type and message |
+| `rating_results` | Successful diary entries, unique per watch event |
+| `film_match_cache` | Resolved slug, numeric film id and base-62 LID, keyed on TMDb id |
+| `match_candidates` | Reserved for per-attempt search candidates; created by the schema, not yet written |
+
+Two databases live in `data/`: **`plexboxd.db`** holds the tables above, and **`movies.db`** holds the
+Plex-side film cache and notification state used for rewatch detection. A pre-1.1
+`data/movie_data.json` is migrated into `movies.db` on first start and renamed to `.backup`.
+
+## Operations
+
+The CLI works against the same database as the bot and can run while it is up.
+
+```bash
+python3 src/plexboxd_cli.py list-failed-jobs             # every failed job as JSON
+python3 src/plexboxd_cli.py inspect-job <job-id>         # one job in full
+python3 src/plexboxd_cli.py retry-job <job-id>           # back to pending
+python3 src/plexboxd_cli.py verify-session               # is the Letterboxd session alive?
+python3 src/plexboxd_cli.py bootstrap-session            # force a fresh browser login
+```
+
+Test the whole match-and-write path against a real watch event, without Discord:
+
+```bash
+# resolve the film only, write nothing
+python3 src/plexboxd_cli.py smoke-write --watch-event-id <id> --rating 4 --dry-run
+
+# actually write a diary entry
+python3 src/plexboxd_cli.py smoke-write \
+  --watch-event-id <id> --rating 4.5 --liked --tags "horror, rewatch" --review "Held up."
+```
+
+Drain one queued job with a standalone worker — useful in a cron job or when the bot is down:
+
+```bash
+python3 src/plexboxd_worker.py --worker-id ops-box
+```
+
+Both accept `--db-path`, defaulting to `data/plexboxd.db` **relative to the working directory** — so
+run them from the repository root. Inside the container the working directory is `/app/src` while the
+bot's database lives at `/app/data/plexboxd.db`, so pass the path explicitly or you will silently
+create a second, empty database:
+
+```bash
+docker compose exec plexboxd python3 plexboxd_cli.py --db-path /app/data/plexboxd.db list-failed-jobs
+```
+
+### Logging
+
+Two log files, both rotating at midnight UTC and keeping 7 days:
+
+| File | Contents |
+|---|---|
+| `plex_bot.log` | Startup and version check, Plex connection, film detection, notifications, queue activity |
+| `letterboxd_integration.log` | Session bootstrap, film matching, diary writes and their failures |
+
+Both are written to `logs/` next to `data/` — in the container that is the `/app/logs` mount,
+regardless of the working directory. Set `PLEXBOXD_LOG_DIR` to relocate them. Everything also goes to
+stdout, so `docker compose logs -f` shows the same lines.
+
+Set `DISCORD_LOGGING_WEBHOOK_URL` to mirror both logs into a channel, colour-coded by level.
+
+### Tests
+
+```bash
+python3 -m pytest
+python3 -m pytest tests/unit     # domain, services, config, Letterboxd runtime
+```
+
+[tests/](./tests/) splits into unit tests for the domain, services and Letterboxd runtime, and
+integration tests covering the schema, job claiming, worker lifecycle and CLI. Everything is
+offline — no Plex, Discord or Letterboxd access needed.
+[build-docker-image.yaml](./.github/workflows/build-docker-image.yaml) runs the suite and gates the
+image publish on it, so a failing commit on `main` never reaches `:latest`.
 
 ## Project Structure
 
 ```
-📦 Plexboxd
-├─ /data                            # Stores persistent data
-│  └─ movie_data.db               # Cached movie data and watch history
-├─ /logs                            # Log files directory
-│  ├─ letterboxd_integration.log    # Letterboxd integration logs
-│  └─ plex_bot.log                  # Main bot logs
-├─ /src                             # Source code
-│  ├─ letterboxd_client/            # Browser runtime, session, resolver, diary writer
-│  ├─ letterboxd_integration.py     # Letterboxd facade + logging
-│  ├─ logging_config.py             # Logging configuration for the bot
-│  ├─ plex_bot.py                   # Main bot code and Plex monitoring
-│  ├─ utils.py                      # Utility functions for Discord embeds
-│  └─ views.py                      # Discord UI components (buttons, selects)
-├─ .env                             # Environment variables (sensitive data)
-├─ .env.example                     # Example environment variables file
-├─ .gitignore                       # Git ignore configuration
-└─ requirements.txt                 # Python dependencies
+plexboxd
+├─ src/
+│  ├─ plex_bot.py                  # Discord bot, Plex monitor, embed dispatch
+│  ├─ views.py                     # Diary entry button and modal
+│  ├─ utils.py                     # Embed construction
+│  ├─ logging_config.py            # Discord webhook log handler
+│  ├─ plexboxd_cli.py              # → plexboxd.interfaces.cli
+│  ├─ plexboxd_worker.py           # → plexboxd.interfaces.worker
+│  └─ plexboxd/
+│     ├─ domain/                   # Models, enums, status machine
+│     ├─ application/              # Ingest, queue, matching, execution
+│     ├─ integrations/letterboxd/  # Session, matcher, writer, verifier, browser
+│     ├─ infrastructure/           # SQLite, migrations, repositories, worker
+│     └─ interfaces/               # CLI and worker entrypoints
+├─ tests/                          # Unit and integration tests
+├─ data/                           # Databases, cookies, browser profile (mounted)
+├─ logs/                           # Rotating log files
+├─ Dockerfile                      # Python 3.12 + Chromium + Xvfb + Node
+├─ entrypoint.sh                   # Starts Xvfb, waits for the display, runs the bot
+└─ .env.example                    # Every setting, documented inline
 ```
-
-## How It Works
-
-1. **Plex Monitoring**: The bot connects to your Plex server and periodically checks for recently watched movies.
-
-2. **Discord Notifications**: When a movie is watched, the bot sends an embed with all necessary movie information to the configured Discord channel.
-
-   ![Movie Notification](https://i.imgur.com/4FbqqRk.png)
-
-3. **Rating Interface**: Each notification includes a dropdown menu to rate the movie directly from Discord.
-
-   ![Rating Interface](https://i.imgur.com/9cOsJwx.png)
-
-4. **Letterboxd Integration**: When you rate a movie, the bot:
-   - Resolves the film via TMDb redirect first, then a search fallback
-   - Looks up the film's base-62 LID from `/film/<slug>/json/` (the write API rejects the numeric film id)
-   - Writes the diary entry over plain HTTP with `POST /api/v0/production-log-entries`, sending rating, like, rewatch, tags and review
-   - Verifies the values Letterboxd echoes back and fails the job on any mismatch
-   - Confirms the action with a success message
-
-   Only the **login** needs a browser. `Patchright` drives a real headed Chromium
-   (against Xvfb in Docker) to obtain the Cloudflare `cf_clearance` cookie, which is
-   then persisted to `data/letterboxd_cookies.json` and reused by the HTTP client. So a
-   rating normally takes a second or two with no browser launch; the browser only starts
-   again when the session expires. If a write is still blocked after a refresh, the
-   browser performs it as a last resort.
-
-   ![Rating Confirmation](https://i.imgur.com/ukaeAVI.png)
-
-5. **Date Assignment Logic**: The bot uses the `DATE_THRESHOLD_HOUR` setting to determine if late-night watches count for the current or previous day in your Letterboxd diary.
-
-## Logging
-
-The bot maintains two primary log files:
-
-1. **plex_bot.log**
-   - Bot startup and initialization
-   - Plex connection status
-   - Movie detection events
-   - Discord notification events
-   - Error messages
-
-2. **letterboxd_integration.log**
-   - Letterboxd login attempts
-   - Movie search operations
-   - Diary entry creation
-   - Date assignment decisions
-
-Both logs can also be forwarded to a Discord channel using the `DISCORD_LOGGING_WEBHOOK_URL` for easier monitoring.
 
 ## Troubleshooting
 
-### Common Issues
+<details>
+<summary><b>The bot cannot connect to Plex</b></summary>
 
-1. **Bot can't connect to Plex**
-   - Verify your Plex server is running
-   - Check your `PLEX_SERVER_URL` and `PLEX_TOKEN` in the `.env` file
-   - Ensure your firewall allows connections to your Plex server
+It retries 7 times, 30 seconds apart, then exits. Check `PLEX_SERVER_URL` (including the `:32400`
+port) and `PLEX_TOKEN`, confirm the container can reach the server, and use the LAN IP rather than
+`localhost` when Plex runs on a different host.
+</details>
 
-2. **Letterboxd integration fails**
-   - Verify your Letterboxd credentials
-   - Check if Letterboxd is experiencing downtime
-   - Ensure Chromium and Chromedriver are installed and version-matched
-   - Keep `./data` mounted in Docker so the Chrome profile/session persists
+<details>
+<summary><b>No notifications appear</b></summary>
 
-3. **Discord notifications aren't showing up**
-   - Verify your bot has proper permissions in the Discord server
-   - Check if the `NOTIFY_CHANNEL_ID` is correct
-   - Make sure the bot has access to the notification channel
+Films are skipped when they were watched more than 30 minutes ago, are still playing, belong to
+`EXCLUDED_LIBRARIES`, were watched by another account, or were already notified within the last 30
+minutes. `PLEX_USERNAME` must match the Plex account name or display name exactly — a mismatch means
+nothing is ever attributed to you. Also confirm `NOTIFY_CHANNEL_ID` and that the bot can see the
+channel and attach files. Polling is every 15 minutes, so allow a cycle.
+</details>
 
-### Checking Logs
+<details>
+<summary><b>Ratings stay queued or the button turns red</b></summary>
 
-- Review the log files in the `/logs` directory for detailed error information
-- If you've configured Discord logging, check the logging channel for real-time updates
+Find the cause, then retry:
+
+```bash
+python3 src/plexboxd_cli.py list-failed-jobs
+```
+
+`error_type` on the attempt tells you where it broke: `challenge_detected` means Cloudflare (run
+`bootstrap-session`), `auth_failed` means wrong credentials, `match_not_found` means the film could
+not be resolved on Letterboxd, and `verification_failed` means the write landed with different
+values than requested. Fix the cause, then `retry-job <id>`.
+</details>
+
+<details>
+<summary><b>Letterboxd login fails</b></summary>
+
+The login needs a real headful Chromium. Leave `LETTERBOXD_BROWSER_HEADLESS` at `false`, make sure
+`npm install` has run so `node_modules/patchright` exists, and confirm Chromium is present — set
+`CHROME_BIN` if auto-detection fails. On a headless Linux host install `xvfb`. In Docker the
+entrypoint starts Xvfb and logs `display :99 not ready; continuing without it` when it could not.
+Keep `./data` mounted so the profile and cookies survive restarts.
+</details>
+
+<details>
+<summary><b>A film is matched to the wrong entry</b></summary>
+
+Matching prefers the TMDb redirect, so a wrong or missing TMDb id in Plex is the usual cause — fix
+the metadata in Plex, then delete the stale `film_match_cache` row so it re-resolves. Check what the
+matcher picks without writing anything:
+
+```bash
+python3 src/plexboxd_cli.py smoke-write --watch-event-id <id> --rating 4 --dry-run
+```
+</details>
 
 ## Security Notes
 
-- Your Letterboxd credentials and other sensitive information are stored in the `.env` file. Keep this file secure and never commit it to version control.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+`.env` holds your Discord bot token, Plex token and Letterboxd password in plain text, and `data/`
+holds a live Letterboxd session plus a Chromium profile. Both are gitignored — keep them that way,
+and do not commit or copy them into an image. `.dockerignore` excludes `data/` for the same reason.
 
 ## Acknowledgements
 
-- [Plex](https://www.plex.tv) for providing an excellent media server platform that makes tracking watched movies possible.
-- [Letterboxd](https://letterboxd.com) for their movie logging and rating service, which inspired the core integration of this bot.
-- [Discord](https://discord.com) for their robust API and bot framework, enabling seamless notifications and interactions.
-- [PlexAPI](https://github.com/pkkid/python-plexapi) - A Python library for interacting with Plex servers, heavily utilized in this project for movie tracking.
-- [curl_cffi](https://github.com/lexiforest/curl_cffi) - Browser-impersonating HTTP client used for Letterboxd film lookups and diary writes.
-- [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) - Drives a real Chromium session for the Letterboxd login that mints the Cloudflare clearance cookie.
-- [discord.py](https://github.com/Rapptz/discord.py) - The backbone of the Discord bot functionality, making embeds and interactive components possible.
+- [Plex](https://www.plex.tv) and [python-plexapi](https://github.com/pkkid/python-plexapi) — media
+  server and the client library used for history and metadata
+- [Letterboxd](https://letterboxd.com) — the diary this project writes to
+- [discord.py](https://github.com/Rapptz/discord.py) — embeds, buttons and modals
+- [curl_cffi](https://github.com/lexiforest/curl_cffi) — browser-impersonating HTTP client for film
+  lookups and diary writes
+- [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) — drives the Chromium session that
+  mints the Cloudflare clearance cookie
 
 ## Disclaimer
 
-This project is not affiliated with or endorsed by Plex, Letterboxd, or Discord. It is an independent tool built for personal use and shared for educational purposes. Use it at your own risk and be respectful of the respective APIs by avoiding excessive requests. The developers are not responsible for any issues arising from misuse, including potential account restrictions by the integrated services.
+Independent third-party project, not affiliated with or endorsed by Plex, Letterboxd or Discord.
+Letterboxd has no public write API, so this bot uses the same endpoints the website does; those can
+change without notice. Use it at your own risk, keep request volume reasonable, and be aware that
+automating an account may conflict with the service's terms.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Released under the [MIT License](./LICENSE).

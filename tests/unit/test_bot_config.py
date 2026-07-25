@@ -58,3 +58,43 @@ def test_version_comparison_is_numeric(monkeypatch) -> None:
     # Tags may carry suffixes; they must not raise.
     assert module._version_tuple("1.3.0-rc1") >= module._version_tuple("1.3.0")
     assert module._version_tuple("") == (0,)
+
+
+def test_logs_are_anchored_to_project_root(monkeypatch, tmp_path) -> None:
+    """A relative "logs" path wrote to /app/src/logs instead of the mounted volume."""
+    from plexboxd.infrastructure.paths import project_root, resolve_data_path
+
+    # Redirect the real log directory so the assertion below cannot be satisfied by
+    # writing into the repository's own logs/.
+    working_dir = tmp_path / "cwd"
+    working_dir.mkdir()
+    monkeypatch.setenv("PLEXBOXD_ROOT", str(tmp_path / "root"))
+    monkeypatch.chdir(working_dir)
+    module = _load_plex_bot(monkeypatch, dict(REQUIRED_ENV))
+
+    module.setup_logging()
+
+    assert (project_root() / "logs").is_dir()
+    assert resolve_data_path("logs") == tmp_path / "root" / "logs"
+    # Nothing may be created relative to the working directory.
+    assert not (working_dir / "logs").exists()
+
+
+def test_letterboxd_logger_writes_to_its_own_file(monkeypatch, tmp_path) -> None:
+    """The integration logger had no handlers, so diary failures reached no file."""
+    import logging
+
+    log_dir = tmp_path / "logs"
+    monkeypatch.setenv("PLEXBOXD_LOG_DIR", str(log_dir))
+    module = _load_plex_bot(monkeypatch, dict(REQUIRED_ENV))
+    module.setup_logging()
+
+    letterboxd_logger = logging.getLogger("LetterboxdIntegration")
+    assert letterboxd_logger.handlers
+    assert letterboxd_logger.propagate is False
+
+    letterboxd_logger.error("diary write failed")
+    for handler in letterboxd_logger.handlers:
+        handler.flush()
+
+    assert "diary write failed" in (log_dir / "letterboxd_integration.log").read_text(encoding="utf-8")

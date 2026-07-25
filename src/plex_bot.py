@@ -21,6 +21,7 @@ from uuid import uuid5, NAMESPACE_URL
 
 from plexboxd.domain.models import NotificationRecord, WatchEvent
 from plexboxd.infrastructure.bootstrap import build_application_container
+from plexboxd.infrastructure.paths import resolve_data_path
 from plexboxd.infrastructure.queue.worker import RatingJobWorker
 
 # Set event loop policy for Windows compatibility with aiodns
@@ -75,44 +76,65 @@ MOVIE_DB_PATH = os.path.join(SCRIPT_DIR, '../data/movies.db')
 RATING_DB_PATH = os.path.join(SCRIPT_DIR, '../data/plexboxd.db')
 
 def setup_logging():
-    """Set up logging with file, console, and Discord handlers."""
-    log_dir = "logs"
+    """Configure the bot and Letterboxd loggers with file, console and Discord handlers.
+
+    The log directory is anchored to the project root rather than the working directory:
+    the bot runs from src/ (and Docker sets WORKDIR /app/src), so a relative "logs" path
+    wrote to /app/src/logs instead of the mounted /app/logs volume.
+    """
+    log_dir = resolve_data_path(os.getenv("PLEXBOXD_LOG_DIR", "logs"))
     os.makedirs(log_dir, exist_ok=True)
-    
+
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler = TimedRotatingFileHandler(
-        filename=os.path.join(log_dir, 'plex_bot.log'),
-        when='midnight',
-        interval=1,
-        backupCount=7,
-        encoding='utf-8',
-        utc=True
-    )
-    file_handler.setFormatter(formatter)
-    file_handler.suffix = "%Y-%m-%d"
-    
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
 
+    def _file_handler(filename: str) -> TimedRotatingFileHandler:
+        handler = TimedRotatingFileHandler(
+            filename=os.path.join(log_dir, filename),
+            when='midnight',
+            interval=1,
+            backupCount=7,
+            encoding='utf-8',
+            utc=True
+        )
+        handler.setFormatter(formatter)
+        handler.suffix = "%Y-%m-%d"
+        return handler
+
+    def _discord_handler(bot_name: str, title_prefix: str):
+        handler = DiscordHandler(
+            webhook_url=DISCORD_LOGGING_WEBHOOK_URL,
+            bot_name=bot_name,
+            title_prefix=title_prefix
+        )
+        handler.setFormatter(formatter)
+        handler.setLevel(logging.INFO)
+        return handler
+
     logger = logging.getLogger('PlexBot')
     logger.setLevel(logging.INFO)
-    
     if logger.hasHandlers():
         logger.handlers.clear()
-        
-    logger.addHandler(file_handler)
+    logger.addHandler(_file_handler('plex_bot.log'))
     logger.addHandler(console_handler)
-    
     if DISCORD_LOGGING_WEBHOOK_URL:
-        discord_handler = DiscordHandler(
-            webhook_url=DISCORD_LOGGING_WEBHOOK_URL,
-            bot_name="Plex Bot Logging",
-            title_prefix="Plex Monitor"
-        )
-        discord_handler.setFormatter(formatter)
-        discord_handler.setLevel(logging.INFO)
-        logger.addHandler(discord_handler)
-    
+        logger.addHandler(_discord_handler("Plex Bot Logging", "Plex Monitor"))
+
+    # The Letterboxd integration modules log to their own logger. Without handlers here it
+    # fell through to logging's last-resort stderr writer, so diary write failures were
+    # never recorded in any file.
+    letterboxd_logger = logging.getLogger('LetterboxdIntegration')
+    letterboxd_logger.setLevel(logging.INFO)
+    if letterboxd_logger.hasHandlers():
+        letterboxd_logger.handlers.clear()
+    letterboxd_logger.addHandler(_file_handler('letterboxd_integration.log'))
+    letterboxd_logger.addHandler(console_handler)
+    if DISCORD_LOGGING_WEBHOOK_URL:
+        letterboxd_logger.addHandler(_discord_handler("Letterboxd Bot Logging", "Letterboxd Integration"))
+    # Handlers are attached here, so do not also bubble up to the root logger.
+    letterboxd_logger.propagate = False
+
     return logger
 
 logger = setup_logging()
