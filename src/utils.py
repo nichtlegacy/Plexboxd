@@ -5,10 +5,9 @@ import io
 import logging
 from datetime import datetime
 from typing import Dict, Tuple, Optional
-import json
 
 # Import branding constants from main module
-from plex_bot import PLEX_LOGO, LETTERBOXD_LOGO, EMBED_AUTHOR_NAME, EMBED_FOOTER_TEXT
+from plex_bot import PLEX_LOGO, EMBED_AUTHOR_NAME, EMBED_FOOTER_TEXT
 
 async def create_movie_embed(movie_details: Dict) -> Tuple[discord.Embed, Optional[discord.File]]:
     """Create a Discord embed and optional file for movie notification."""

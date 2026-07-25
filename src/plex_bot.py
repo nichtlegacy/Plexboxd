@@ -8,7 +8,7 @@ from logging.handlers import TimedRotatingFileHandler
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, Optional
 from dotenv import load_dotenv
 from logging_config import DiscordHandler
@@ -68,7 +68,11 @@ EMBED_FOOTER_TEXT = "Watched"
 CURRENT_VERSION = "1.3.0"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-MOVIE_DATA_PATH = os.path.join(SCRIPT_DIR, '../data/movie_data.json')
+# Pre-1.1 installations stored watch history here; it is migrated into movies.db on
+# startup and then left alone.
+LEGACY_MOVIE_JSON_PATH = os.path.join(SCRIPT_DIR, '../data/movie_data.json')
+MOVIE_DB_PATH = os.path.join(SCRIPT_DIR, '../data/movies.db')
+RATING_DB_PATH = os.path.join(SCRIPT_DIR, '../data/plexboxd.db')
 
 def setup_logging():
     """Set up logging with file, console, and Discord handlers."""
@@ -183,13 +187,22 @@ class MovieDatabase:
 
     @contextmanager
     def _get_connection(self):
-        """Get a database connection with proper error handling."""
+        """Yield a connection that commits on success and rolls back on failure.
+
+        Committing here rather than at each call site: several writers (mark_as_rated,
+        the schema setup, the notification-state updates) relied on an implicit commit
+        that never happened, so their changes were discarded when the connection closed.
+        Callers may still commit explicitly; a second commit is a no-op.
+        """
         conn = None
         try:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             yield conn
+            conn.commit()
         except Exception as e:
+            if conn:
+                conn.rollback()
             logger.error(f"Database error: {str(e)}")
             raise
         finally:
@@ -236,17 +249,6 @@ class MovieDatabase:
             if row:
                 return self._row_to_dict(row)
             return None
-
-    def get_recent_unrated_movies(self, limit=5):
-        """Get the most recent unrated movies."""
-        with self._get_connection() as conn:
-            cursor = conn.execute('''
-                SELECT * FROM movies 
-                WHERE is_rated = 0 
-                ORDER BY last_viewed_at DESC 
-                LIMIT ?
-            ''', (limit,))
-            return [self._row_to_dict(row) for row in cursor.fetchall()]
 
     def _row_to_dict(self, row):
         """Convert a database row to a dictionary."""
@@ -295,37 +297,6 @@ class MovieDatabase:
                     return True
             
             return False
-
-    def get_previous_viewing_date(self, tmdb_id: str = None, title: str = None, year: int = None) -> Optional[str]:
-        """Get the previous viewing date for a movie (for rewatch display).
-        
-        Uses TMDB ID as primary identifier, falls back to title+year.
-        Returns ISO format date string if found, None otherwise.
-        """
-        with self._get_connection() as conn:
-            # First try to find by TMDB ID (most reliable)
-            if tmdb_id:
-                cursor = conn.execute('''
-                    SELECT last_viewed_at FROM movies 
-                    WHERE tmdb_id = ? AND is_rated = 1
-                    ORDER BY last_viewed_at DESC LIMIT 1
-                ''', (tmdb_id,))
-                row = cursor.fetchone()
-                if row and row['last_viewed_at']:
-                    return row['last_viewed_at']
-            
-            # Fallback: check by title + year
-            if title and year:
-                cursor = conn.execute('''
-                    SELECT last_viewed_at FROM movies 
-                    WHERE title = ? AND year = ? AND is_rated = 1
-                    ORDER BY last_viewed_at DESC LIMIT 1
-                ''', (title, year))
-                row = cursor.fetchone()
-                if row and row['last_viewed_at']:
-                    return row['last_viewed_at']
-            
-            return None
 
     def was_recently_notified(self, tmdb_id: str, title: str, year: int, last_viewed_at: datetime, threshold_seconds: int = 1800) -> bool:
         """Check if a notification was already sent for this movie (across all libraries).
@@ -439,12 +410,11 @@ class PlexMonitor:
     """Monitor Plex server for watched movies."""
     def __init__(self):
         self.plex = None
-        self.db = MovieDatabase(os.path.join(SCRIPT_DIR, '../data/movies.db'))
-        
-        json_path = os.path.join(SCRIPT_DIR, '../data/movie_data.json')
-        if os.path.exists(json_path):
+        self.db = MovieDatabase(MOVIE_DB_PATH)
+
+        if os.path.exists(LEGACY_MOVIE_JSON_PATH):
             try:
-                self.db.migrate_from_json(json_path)
+                self.db.migrate_from_json(LEGACY_MOVIE_JSON_PATH)
             except Exception as e:
                 logger.error(f"Failed to migrate JSON data: {str(e)}")
 
@@ -517,7 +487,7 @@ class PlexDiscordBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix='!', intents=intents)
         self.plex_monitor = PlexMonitor()
-        self.app = build_application_container(os.path.join(SCRIPT_DIR, "../data/plexboxd.db"))
+        self.app = build_application_container(RATING_DB_PATH)
         self.notify_channel = None
         self._runtime_loop = None
         self.rating_worker = RatingJobWorker(
@@ -593,11 +563,9 @@ class PlexDiscordBot(commands.Bot):
             self.app.notifications.update_view_state(notification.id, "succeeded", self.app.clock.now())
         if event.plex_rating_key:
             try:
-                with self.plex_monitor.db._get_connection() as conn:
-                    conn.execute('UPDATE movies SET is_rated = 1 WHERE rating_key = ?', (event.plex_rating_key,))
-                    conn.commit()
+                self.plex_monitor.db.mark_as_rated(event.plex_rating_key)
             except Exception as exc:
-                logger.error(f"Failed to mark legacy movie row as rated: {exc}")
+                logger.error(f"Failed to mark movie row as rated: {exc}")
         if not notification or not self.notify_channel:
             return
         try:

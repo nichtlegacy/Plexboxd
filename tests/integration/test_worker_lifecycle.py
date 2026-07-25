@@ -3,7 +3,7 @@ from pathlib import Path
 from plexboxd.application.rating_execution import RatingExecutionService
 from plexboxd.application.rating_jobs import RatingJobService
 from plexboxd.domain.enums import RatingAttemptStatus, RatingJobStatus
-from plexboxd.domain.models import RatingJob, RatingResult, RatingRequest, WatchEvent
+from plexboxd.domain.models import RatingRequest, WatchEvent
 from plexboxd.infrastructure.db.connection import Database
 from plexboxd.infrastructure.db.migrations import apply_migrations
 from plexboxd.infrastructure.db.repositories import (

@@ -5,10 +5,6 @@ from dataclasses import dataclass
 from plexboxd.domain.models import WatchEvent
 
 
-class WatchEventConflictError(Exception):
-    """Raised when the same watch event is ingested twice."""
-
-
 @dataclass(slots=True)
 class WatchIngestService:
     """Creates watch events while delegating idempotency to a repository."""

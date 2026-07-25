@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 
 from plexboxd.domain.enums import RatingJobStatus
 from plexboxd.domain.models import RatingJob, RatingRequest

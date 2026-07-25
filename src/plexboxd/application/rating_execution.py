@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from plexboxd.domain.enums import RatingAttemptStatus, RatingJobStatus
+from plexboxd.domain.enums import RatingAttemptStatus
 from plexboxd.domain.models import RatingAttempt, RatingJob, RatingResult, WatchEvent
 from plexboxd.integrations.letterboxd.session import AuthenticationError, CloudflareChallengeError, LetterboxdSessionError
 

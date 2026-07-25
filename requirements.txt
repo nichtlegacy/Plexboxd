@@ -5,8 +5,11 @@ discord.py==2.6.4
 plexapi==4.15.16
 
 # HTTP requests
-aiohttp==3.11.13
+# 3.11.13 was yanked upstream (aio-libs/aiohttp#10617); stay on the same minor line.
+aiohttp==3.11.18
 requests==2.32.3
+# curl_cffi impersonates a real browser's TLS fingerprint, which is what lets the
+# Letterboxd API calls through Cloudflare without a browser.
 curl_cffi==0.13.0
 
 # HTML parsing (browser automation lives in package.json / Patchright)
