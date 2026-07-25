@@ -6,6 +6,7 @@ from datetime import date
 from plexboxd.domain.enums import RatingAttemptStatus
 from plexboxd.domain.models import RatingAttempt, RatingJob, RatingResult, WatchEvent
 from plexboxd.integrations.letterboxd.session import AuthenticationError, CloudflareChallengeError, LetterboxdSessionError
+from plexboxd.integrations.letterboxd.verifier import VerificationError
 
 
 @dataclass(slots=True)
@@ -105,10 +106,13 @@ def _determine_watched_on(event: WatchEvent, write_result: dict) -> date:
 
 
 def _classify_error_type(exc: Exception) -> str:
+    """Label a failure so `list-failed-jobs` says where it broke."""
     if isinstance(exc, CloudflareChallengeError):
         return "challenge_detected"
     if isinstance(exc, AuthenticationError):
         return "auth_failed"
+    if isinstance(exc, VerificationError):
+        return "verification_failed"
     if isinstance(exc, LetterboxdSessionError):
         return "write_rejected"
     return "unknown"

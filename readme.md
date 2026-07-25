@@ -331,14 +331,14 @@ Drain one queued job with a standalone worker — useful in a cron job or when t
 python3 src/plexboxd_worker.py --worker-id ops-box
 ```
 
-Both accept `--db-path`, defaulting to `data/plexboxd.db` **relative to the working directory** — so
-run them from the repository root. Inside the container the working directory is `/app/src` while the
-bot's database lives at `/app/data/plexboxd.db`, so pass the path explicitly or you will silently
-create a second, empty database:
+Both default to `data/plexboxd.db`, resolved against the project root rather than the working
+directory, so they find the bot's database from anywhere — including inside the container:
 
 ```bash
-docker compose exec plexboxd python3 plexboxd_cli.py --db-path /app/data/plexboxd.db list-failed-jobs
+docker compose exec plexboxd python3 plexboxd_cli.py list-failed-jobs
 ```
+
+Pass `--db-path` to point at a different database.
 
 ### Logging
 
@@ -422,10 +422,18 @@ Find the cause, then retry:
 python3 src/plexboxd_cli.py list-failed-jobs
 ```
 
-`error_type` on the attempt tells you where it broke: `challenge_detected` means Cloudflare (run
-`bootstrap-session`), `auth_failed` means wrong credentials, `match_not_found` means the film could
-not be resolved on Letterboxd, and `verification_failed` means the write landed with different
-values than requested. Fix the cause, then `retry-job <id>`.
+`error_type` on the attempt tells you where it broke:
+
+| `error_type` | Meaning |
+|---|---|
+| `challenge_detected` | Cloudflare blocked the request — run `bootstrap-session` |
+| `auth_failed` | Letterboxd credentials rejected |
+| `match_not_found` | The film could not be resolved on Letterboxd |
+| `write_rejected` | Letterboxd refused the write, `error_message` has its reason |
+| `verification_failed` | The entry was created with different values than requested |
+| `unknown` | Anything else; see `error_message` |
+
+Fix the cause, then `retry-job <id>`.
 </details>
 
 <details>

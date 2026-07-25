@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from plexboxd.integrations.letterboxd.verifier import BasicLetterboxdVerifier
+from plexboxd.integrations.letterboxd.verifier import BasicLetterboxdVerifier, VerificationError
 
 
 def _job(rating: float = 4.5, liked: bool = True, rewatch: bool = False):
@@ -80,3 +80,20 @@ def test_verify_tolerates_float_rating_representation() -> None:
     BasicLetterboxdVerifier().verify(
         write_result=_write_result(rating=3.0), event=object(), job=_job(rating=3)
     )
+
+
+def test_error_types_cover_every_documented_value() -> None:
+    """`list-failed-jobs` error_type values are documented, so keep them in sync."""
+    from plexboxd.application.rating_execution import _classify_error_type
+    from plexboxd.integrations.letterboxd.session import (
+        AuthenticationError,
+        CloudflareChallengeError,
+        LetterboxdSessionError,
+    )
+
+    assert _classify_error_type(CloudflareChallengeError("x")) == "challenge_detected"
+    assert _classify_error_type(AuthenticationError("x")) == "auth_failed"
+    assert _classify_error_type(LetterboxdSessionError("x")) == "write_rejected"
+    # A verification mismatch used to fall through to "unknown".
+    assert _classify_error_type(VerificationError("x")) == "verification_failed"
+    assert _classify_error_type(ValueError("x")) == "unknown"

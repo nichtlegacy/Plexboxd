@@ -5,10 +5,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from plexboxd.infrastructure.paths import resolve_data_path
+
 
 class Database:
     def __init__(self, path: str | Path):
-        self.path = str(path)
+        # Anchor relative paths to the project root. The CLI and worker default to
+        # "data/plexboxd.db", and the bot runs from src/ (WORKDIR /app/src in Docker), so
+        # resolving against the working directory pointed them at a non-existent
+        # src/data/ instead of the real database.
+        self.path = str(resolve_data_path(path))
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

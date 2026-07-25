@@ -68,12 +68,12 @@ EMBED_FOOTER_TEXT = "Watched"
 
 CURRENT_VERSION = "1.3.0"
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Pre-1.1 installations stored watch history here; it is migrated into movies.db on
-# startup and then left alone.
-LEGACY_MOVIE_JSON_PATH = os.path.join(SCRIPT_DIR, '../data/movie_data.json')
-MOVIE_DB_PATH = os.path.join(SCRIPT_DIR, '../data/movies.db')
-RATING_DB_PATH = os.path.join(SCRIPT_DIR, '../data/plexboxd.db')
+# Anchored to the project root, so these stay correct whatever the working directory is.
+# Pre-1.1 installations stored watch history in the JSON file; it is migrated into
+# movies.db on startup and then left alone.
+LEGACY_MOVIE_JSON_PATH = str(resolve_data_path('data/movie_data.json'))
+MOVIE_DB_PATH = str(resolve_data_path('data/movies.db'))
+RATING_DB_PATH = str(resolve_data_path('data/plexboxd.db'))
 
 def setup_logging():
     """Configure the bot and Letterboxd loggers with file, console and Discord handlers.

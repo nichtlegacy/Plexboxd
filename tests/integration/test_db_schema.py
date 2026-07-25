@@ -62,3 +62,27 @@ def _applied_versions(database: Database) -> list[str]:
             row["version"]
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
         ]
+
+
+def test_relative_db_path_is_anchored_to_project_root(monkeypatch, tmp_path) -> None:
+    """The CLI and worker default to a relative "data/plexboxd.db".
+
+    Resolved against the working directory that pointed at a non-existent src/data/
+    when run from src/ (which is the container's WORKDIR), so the CLI failed with
+    "unable to open database file".
+    """
+    monkeypatch.setenv("PLEXBOXD_ROOT", str(tmp_path))
+    working_dir = tmp_path / "elsewhere"
+    working_dir.mkdir()
+    monkeypatch.chdir(working_dir)
+
+    database = Database("data/plexboxd.db")
+
+    assert Path(database.path) == tmp_path / "data" / "plexboxd.db"
+    assert not (working_dir / "data").exists()
+
+
+def test_absolute_db_path_is_left_alone(tmp_path) -> None:
+    explicit = tmp_path / "custom" / "plexboxd.db"
+
+    assert Path(Database(explicit).path) == explicit
