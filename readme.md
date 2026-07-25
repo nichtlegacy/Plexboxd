@@ -14,7 +14,8 @@ Self-hosted Discord bot, SQLite job queue, no Letterboxd API key required.
 
 [Overview](#overview) • [Quick Start](#quick-start) • [Configuration](#configuration) • [Architecture](#architecture) • [Operations](#operations) • [Troubleshooting](#troubleshooting)
 
-![Plexboxd notification in Discord](./assets/hero.png)
+<img src="./assets/hero.png" alt="Plexboxd notification in Discord" width="620">
+
 
 </div>
 
@@ -54,7 +55,8 @@ The write path is deliberate about two things:
   cached so repeat ratings skip lookup entirely
 - **Late-night date handling** — `DATE_THRESHOLD_HOUR` assigns a 03:00 finish to the previous day
 - **Library exclusion** — keep 4K or Kids libraries out of your notifications
-- **Live button state** — the button reflects queued, `Rated 4.0 ★ …`, or a red retry state on failure
+- **Live button state** — the button follows the job: `⏳ Sending to Letterboxd…`, `✅ Logged ★★★½`, or
+  a red `🔁 Retry` on failure
 - **Discord log forwarding** — optional webhook mirror of the bot log
 
 ## How It Works
@@ -111,8 +113,13 @@ flowchart LR
 2. **Notify.** An embed with a `📝 Diary Entry` button goes to `NOTIFY_CHANNEL_ID`, optionally
    mentioning `DISCORD_USER_ID`. The Discord message id is recorded so state can be restored after a
    restart.
-3. **Queue.** Submitting the modal enqueues a `rating_job` and immediately confirms with an ephemeral
-   reply — Discord never waits on Letterboxd.
+3. **Queue.** The button opens a modal for rating, rewatch, like, tags and review. Submitting it
+   enqueues a `rating_job` and confirms immediately — Discord never waits on Letterboxd.
+
+   <div align="center">
+     <img src="./assets/modal.png" alt="The Letterboxd diary entry modal in Discord" width="420">
+   </div>
+
 4. **Match.** The worker resolves the film via the cached LID, then `letterboxd.com/tmdb/<id>`, then
    film search. The base-62 LID from `/film/<slug>/json/` is what the write API needs; the numeric
    film id is rejected there.
@@ -120,8 +127,8 @@ flowchart LR
    tags and review. If Cloudflare blocks it, the browser refreshes the session and the write is
    retried over HTTP; only if that fails too does the browser perform the write itself.
 6. **Verify and report.** Rating, like, rewatch and diary date from the response are compared against
-   the request. On success the button becomes `Rated 4.0 ★ …`; on failure it turns into a red
-   **Retry Diary Entry**.
+   the request. The button tracks the job throughout: `⏳ Sending to Letterboxd…`, then a green
+   `✅ Logged ★★★½`, or a red `🔁 Retry` if the write failed.
 
 ## Requirements
 
