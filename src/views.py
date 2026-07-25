@@ -10,6 +10,10 @@ from discord_time import to_aware_datetime
 
 logger = logging.getLogger('PlexBot')
 
+# Duplicated from plex_bot rather than imported: plex_bot imports this module, so taking
+# the constant from there would be a circular import.
+LETTERBOXD_LOGO = "https://i.imgur.com/0Yd2L4i.png"
+
 
 def format_stars(rating: float) -> str:
     """Render a rating the way Letterboxd writes it: ★★★½ rather than "3.5 stars".
@@ -27,6 +31,52 @@ def format_stars(rating: float) -> str:
     if not full and half:
         return "½ star"
     return f"{'★' * full}{half}"
+
+
+def build_queue_confirmation(
+    *,
+    movie_title: str,
+    movie_year: int,
+    rating: float,
+    liked: bool,
+    rewatch: bool,
+    tags: tuple[str, ...] = (),
+    review: str = "",
+) -> discord.Embed:
+    """Confirm what the user just chose, before the write has happened.
+
+    Deliberately reflects the choices back rather than reporting queue mechanics: the
+    job id it used to lead with is only useful for `plexboxd-cli inspect-job`, so it goes
+    to the log instead. Flags appear only when set, so an unadorned rating stays a single
+    short line.
+    """
+    details = [format_stars(rating)]
+    if liked:
+        details.append("❤️ Liked")
+    if rewatch:
+        details.append("🔄 Rewatch")
+
+    embed = discord.Embed(
+        title=f"{movie_title} ({movie_year})",
+        description="\n".join(
+            [
+                "  ".join(details),
+                "",
+                "-# Writing to your Letterboxd diary — the button updates when it lands.",
+            ]
+        ),
+        color=discord.Color.orange(),
+        timestamp=discord.utils.utcnow(),
+    )
+    if tags:
+        embed.add_field(name="🏷️ Tags", value=" ".join(f"`{tag}`" for tag in tags), inline=False)
+    if review and review.strip():
+        text = review.strip()
+        preview = text if len(text) <= 300 else f"{text[:300]}…"
+        # Block quote so a multi-line review cannot be mistaken for bot copy.
+        embed.add_field(name="📝 Review", value=f">>> {preview}", inline=False)
+    embed.set_author(name="Letterboxd", icon_url=LETTERBOXD_LOGO)
+    return embed
 
 
 def _parse_tags(tags_text: str) -> tuple[str, ...]:
@@ -184,22 +234,23 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
                     self.bot.app.clock.now(),
                 )
 
-            embed = discord.Embed(
-                title="Sending to Letterboxd",
-                description=(
-                    f"**{self.movie_title} ({self.movie_year})** — {format_stars(rating)}\n"
-                    f"-# Job `{job.id}`"
-                ),
-                color=discord.Color.orange(),
-                timestamp=discord.utils.utcnow()
+            # The job id belongs in the log, not on screen: it is only useful for
+            # `plexboxd-cli inspect-job`, and it dominated a message whose job is to
+            # confirm what the user just chose.
+            logger.info(
+                f"Queued {self.movie_title} ({self.movie_year}) with {rating} stars "
+                f"(job {job.id})"
             )
-            parsed_tags = _parse_tags(tags_text)
-            if parsed_tags:
-                embed.add_field(name="Tags", value=", ".join(parsed_tags), inline=False)
-            if review_text:
-                preview = review_text if len(review_text) <= 200 else f"{review_text[:200]}…"
-                embed.add_field(name="Review", value=preview, inline=False)
-            embed.set_author(name="Letterboxd Queue", icon_url="https://i.imgur.com/0Yd2L4i.png")
+
+            embed = build_queue_confirmation(
+                movie_title=self.movie_title,
+                movie_year=self.movie_year,
+                rating=rating,
+                liked=is_liked,
+                rewatch=is_rewatch,
+                tags=_parse_tags(tags_text),
+                review=review_text,
+            )
             await interaction.followup.send(embed=embed, ephemeral=True)
 
             if self.parent_view and self.original_message:
@@ -219,7 +270,7 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
                 color=discord.Color.green(),
                 timestamp=viewed_at_dt,
             )
-            embed.set_author(name="Letterboxd Rating", icon_url="https://i.imgur.com/0Yd2L4i.png")
+            embed.set_author(name="Letterboxd", icon_url=LETTERBOXD_LOGO)
             await interaction.followup.send(embed=embed, ephemeral=True)
             if self.parent_view and self.original_message:
                 self.parent_view.mark_succeeded(rating=rating)
@@ -236,7 +287,7 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
                 color=discord.Color.red(),
                 timestamp=discord.utils.utcnow()
             )
-            embed.set_author(name="Letterboxd Error", icon_url="https://i.imgur.com/0Yd2L4i.png")
+            embed.set_author(name="Letterboxd", icon_url=LETTERBOXD_LOGO)
             await interaction.followup.send(embed=embed, ephemeral=True)
     
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:

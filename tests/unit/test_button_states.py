@@ -111,3 +111,49 @@ def test_states_are_visually_distinct(views) -> None:
     # Only the failed state invites another click.
     assert failed[2] is False
     assert queued[2] is True and succeeded[2] is True
+
+
+def test_queue_confirmation_shows_the_choices_not_the_job_id(views) -> None:
+    """The job id is only useful for inspect-job, and it dominated the message."""
+    embed = views.build_queue_confirmation(
+        movie_title="The Batman",
+        movie_year=2022,
+        rating=4.5,
+        liked=True,
+        rewatch=True,
+        tags=("noir", "with-friends"),
+        review="Pattinson carries it.",
+    )
+
+    assert embed.title == "The Batman (2022)"
+    assert "★★★★½" in embed.description
+    assert "Liked" in embed.description
+    assert "Rewatch" in embed.description
+    assert "job-" not in embed.description
+
+    fields = {field.name: field.value for field in embed.fields}
+    assert "`noir`" in fields["🏷️ Tags"]
+    assert "Pattinson carries it." in fields["📝 Review"]
+
+
+def test_queue_confirmation_stays_minimal_without_extras(views) -> None:
+    embed = views.build_queue_confirmation(
+        movie_title="Heat", movie_year=1995, rating=3.0, liked=False, rewatch=False
+    )
+
+    assert embed.description.startswith("★★★")
+    # Nothing the user did not ask for.
+    assert "Liked" not in embed.description
+    assert "Rewatch" not in embed.description
+    assert embed.fields == []
+
+
+def test_queue_confirmation_truncates_a_long_review(views) -> None:
+    embed = views.build_queue_confirmation(
+        movie_title="Heat", movie_year=1995, rating=3.0, liked=False, rewatch=False,
+        review="x" * 500,
+    )
+
+    review = next(field.value for field in embed.fields if "Review" in field.name)
+    assert review.endswith("…")
+    assert len(review) < 400
