@@ -44,6 +44,8 @@ films only, not TV.
   correctly reports which library a film was actually played from
 - **Rich Discord notifications** — poster attachment, duration, genres, director, rating, library, and
   view count plus previous watch date on rewatches
+- **Timezone-correct timestamps** — the embed clock shows when the film was watched, not when the bot
+  noticed it, and dates render in each viewer's own timezone and locale
 - **Full diary entry modal** — rating in half-star steps, rewatch, like, tags and a 1000-character
   review, with rewatch pre-selected when the film is already in your history
 - **Verified writes** — the response from Letterboxd is compared field by field against the request;
