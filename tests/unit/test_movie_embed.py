@@ -65,21 +65,22 @@ def test_footer_clock_uses_the_watch_time(utils_module) -> None:
     assert embed.timestamp.replace(tzinfo=None) == datetime.fromisoformat(WATCHED_AT)
 
 
-def test_description_carries_a_relative_timestamp(utils_module) -> None:
-    """Footer text is not parsed as markdown, so the tag goes in the description."""
+def test_description_holds_only_the_summary(utils_module) -> None:
+    """Discord renders the watch time itself, so the description must not repeat it."""
     embed = _build(utils_module)
 
-    expected = utils_module.discord_timestamp(WATCHED_AT, "R")
-    assert expected in embed.description
-    assert "🍿 Watched" in embed.description
-    # The summary must survive alongside it.
-    assert "He-Man must save Eternia." in embed.description
+    assert embed.description == "📜 **Description**: He-Man must save Eternia."
 
 
-def test_footer_text_contains_no_markup(utils_module) -> None:
+def test_footer_is_the_label_alone(utils_module) -> None:
+    """Discord appends the embed timestamp after the footer text."""
     embed = _build(utils_module)
 
+    assert embed.footer.text == "Watched"
+    # No markup (it would render verbatim) and no hand-formatted date (it would
+    # duplicate the timestamp Discord already shows).
     assert "<t:" not in embed.footer.text
+    assert "2026" not in embed.footer.text
 
 
 def test_last_viewed_uses_dynamic_timestamp_on_rewatch(utils_module) -> None:
@@ -95,5 +96,4 @@ def test_embed_still_builds_without_a_watch_time(utils_module) -> None:
     embed = _build(utils_module, last_viewed_at=None)
 
     assert embed.timestamp is not None
-    assert "🍿 Watched" not in embed.description
     assert "He-Man must save Eternia." in embed.description

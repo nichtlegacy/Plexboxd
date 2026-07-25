@@ -14,20 +14,13 @@ async def create_movie_embed(movie_details: Dict) -> Tuple[discord.Embed, Option
     """Create a Discord embed and optional file for movie notification."""
     watched_at = to_aware_datetime(movie_details.get('last_viewed_at'))
 
-    description = f"📜 **Description**: {shorten_summary(movie_details['summary'])}"
-    watched_relative = discord_timestamp(watched_at, "R")
-    if watched_relative:
-        # Rendered in the description rather than the footer: embed footer text is not
-        # parsed as markdown, so a <t:...> tag would show up there verbatim.
-        watched_absolute = discord_timestamp(watched_at, "f")
-        description = f"-# 🍿 Watched {watched_relative} · {watched_absolute}\n\n{description}"
-
     embed = discord.Embed(
         title=f"{movie_details['title']} ({movie_details['year']})",
-        description=description,
+        description=f"📜 **Description**: {shorten_summary(movie_details['summary'])}",
         color=discord.Color.orange(),
-        # The footer clock reflects when the film was watched, not when the bot noticed
-        # it; polling runs every 15 minutes, so those are not the same moment.
+        # Discord renders this next to the footer text in each viewer's own timezone and
+        # locale. It has to be the watch time, not utcnow(): polling runs every 15
+        # minutes, so "Watched" and the rendered clock were not the same moment.
         timestamp=watched_at or discord.utils.utcnow()
     )
 
@@ -62,8 +55,9 @@ async def create_movie_embed(movie_details: Dict) -> Tuple[discord.Embed, Option
     
     embed.set_author(name=EMBED_AUTHOR_NAME, icon_url=PLEX_LOGO)
     embed.set_thumbnail(url=PLEX_LOGO)
-    # Footer text stays plain: it is not parsed as markdown. Its clock now carries the
-    # watch time set above, so "Watched" and the rendered time finally agree.
+    # Just the label: Discord appends the embed timestamp after it, so spelling out a
+    # date here would duplicate it. Footer text is not parsed as markdown either, so a
+    # <t:...> tag would render verbatim.
     embed.set_footer(text=EMBED_FOOTER_TEXT, icon_url=PLEX_LOGO)
     
     file = None
