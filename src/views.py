@@ -7,6 +7,7 @@ from datetime import datetime
 
 from plexboxd.application.rating_jobs import RatingJobAlreadyCompletedError
 from plexboxd.domain.models import RatingRequest
+from discord_time import to_aware_datetime
 
 logger = logging.getLogger('PlexBot')
 
@@ -173,7 +174,7 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
                     f"Job: `{job.id}`"
                 ),
                 color=discord.Color.orange(),
-                timestamp=datetime.now()
+                timestamp=discord.utils.utcnow()
             )
             parsed_tags = _parse_tags(tags_text)
             if parsed_tags:
@@ -191,7 +192,7 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
                 except Exception as e:
                     logger.warning(f"Could not update queued button state: {str(e)}")
         except RatingJobAlreadyCompletedError:
-            viewed_at_dt = datetime.fromisoformat(self.last_viewed_at) if self.last_viewed_at else datetime.now()
+            viewed_at_dt = to_aware_datetime(self.last_viewed_at) or discord.utils.utcnow()
             embed = discord.Embed(
                 title="Already Rated",
                 description=f"**{self.movie_title} ({self.movie_year})** already has a successful Letterboxd result.",
@@ -209,7 +210,7 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
                 title="❌ Queue Failed!",
                 description=f"Error: {str(e)[:300]}{'...' if len(str(e)) > 300 else ''}",
                 color=discord.Color.red(),
-                timestamp=datetime.now()
+                timestamp=discord.utils.utcnow()
             )
             embed.set_author(name="Letterboxd Error", icon_url="https://i.imgur.com/0Yd2L4i.png")
             await interaction.followup.send(embed=embed, ephemeral=True)

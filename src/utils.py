@@ -3,21 +3,34 @@ import discord
 import aiohttp
 import io
 import logging
-from datetime import datetime
 from typing import Dict, Tuple, Optional
 
 # Import branding constants from main module
+from discord_time import discord_timestamp, to_aware_datetime
 from plex_bot import PLEX_LOGO, EMBED_AUTHOR_NAME, EMBED_FOOTER_TEXT
+
 
 async def create_movie_embed(movie_details: Dict) -> Tuple[discord.Embed, Optional[discord.File]]:
     """Create a Discord embed and optional file for movie notification."""
+    watched_at = to_aware_datetime(movie_details.get('last_viewed_at'))
+
+    description = f"📜 **Description**: {shorten_summary(movie_details['summary'])}"
+    watched_relative = discord_timestamp(watched_at, "R")
+    if watched_relative:
+        # Rendered in the description rather than the footer: embed footer text is not
+        # parsed as markdown, so a <t:...> tag would show up there verbatim.
+        watched_absolute = discord_timestamp(watched_at, "f")
+        description = f"-# 🍿 Watched {watched_relative} · {watched_absolute}\n\n{description}"
+
     embed = discord.Embed(
         title=f"{movie_details['title']} ({movie_details['year']})",
-        description=f"📜 **Description**: {shorten_summary(movie_details['summary'])}",
+        description=description,
         color=discord.Color.orange(),
-        timestamp=discord.utils.utcnow()
+        # The footer clock reflects when the film was watched, not when the bot noticed
+        # it; polling runs every 15 minutes, so those are not the same moment.
+        timestamp=watched_at or discord.utils.utcnow()
     )
-    
+
     genres = [g.strip() for g in movie_details.get('genres', '').split(',')] if movie_details.get('genres') else ['Unknown']
     directors = [d.strip() for d in movie_details.get('directors', '').split(',')] if movie_details.get('directors') else ['Unknown']
     
@@ -34,9 +47,12 @@ async def create_movie_embed(movie_details: Dict) -> Tuple[discord.Embed, Option
     # If rewatch: View Count in same row as Library, Last Viewed (previous date) in next row
     if movie_details['view_count'] > 1 and movie_details.get('previous_viewed_at'):
         embed.add_field(name="📊 View Count", value=str(movie_details['view_count']), inline=True)
+        # A dynamic timestamp instead of a fixed d.m.Y string: field values do render
+        # markdown, so each viewer sees this in their own timezone and format.
+        previous_viewed = discord_timestamp(movie_details['previous_viewed_at'], "R")
         embed.add_field(
             name="👀 Last Viewed",
-            value=datetime.fromisoformat(movie_details['previous_viewed_at']).strftime('%d.%m.%Y %H:%M'),
+            value=previous_viewed or "Unknown",
             inline=True
         )
         embed.add_field(name="\u200b", value="\u200b", inline=True)  # Empty field for alignment
@@ -46,6 +62,8 @@ async def create_movie_embed(movie_details: Dict) -> Tuple[discord.Embed, Option
     
     embed.set_author(name=EMBED_AUTHOR_NAME, icon_url=PLEX_LOGO)
     embed.set_thumbnail(url=PLEX_LOGO)
+    # Footer text stays plain: it is not parsed as markdown. Its clock now carries the
+    # watch time set above, so "Watched" and the rendered time finally agree.
     embed.set_footer(text=EMBED_FOOTER_TEXT, icon_url=PLEX_LOGO)
     
     file = None
