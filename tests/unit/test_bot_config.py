@@ -62,20 +62,21 @@ def test_version_comparison_is_numeric(monkeypatch) -> None:
 
 def test_logs_are_anchored_to_project_root(monkeypatch, tmp_path) -> None:
     """A relative "logs" path wrote to /app/src/logs instead of the mounted volume."""
-    from plexboxd.infrastructure.paths import project_root, resolve_data_path
+    from plexboxd.infrastructure.paths import resolve_data_path
 
-    # Redirect the real log directory so the assertion below cannot be satisfied by
-    # writing into the repository's own logs/.
     working_dir = tmp_path / "cwd"
     working_dir.mkdir()
     monkeypatch.setenv("PLEXBOXD_ROOT", str(tmp_path / "root"))
+    # The default is relative, which is exactly the case that used to resolve against
+    # the working directory. (The autouse fixture pins an absolute path; drop it here.)
+    monkeypatch.delenv("PLEXBOXD_LOG_DIR", raising=False)
     monkeypatch.chdir(working_dir)
     module = _load_plex_bot(monkeypatch, dict(REQUIRED_ENV))
 
     module.setup_logging()
 
-    assert (project_root() / "logs").is_dir()
     assert resolve_data_path("logs") == tmp_path / "root" / "logs"
+    assert (tmp_path / "root" / "logs").is_dir()
     # Nothing may be created relative to the working directory.
     assert not (working_dir / "logs").exists()
 
