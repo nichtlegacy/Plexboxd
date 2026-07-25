@@ -3,13 +3,30 @@ import discord
 from discord.ui import Button, View, Modal, TextInput, Select, Label
 from discord import TextStyle, SelectOption
 import logging
-from datetime import datetime
 
 from plexboxd.application.rating_jobs import RatingJobAlreadyCompletedError
 from plexboxd.domain.models import RatingRequest
 from discord_time import to_aware_datetime
 
 logger = logging.getLogger('PlexBot')
+
+
+def format_stars(rating: float) -> str:
+    """Render a rating the way Letterboxd writes it: ★★★½ rather than "3.5 stars".
+
+    Button labels cap at 80 characters and are plain text, so this stays compact and
+    needs no markdown.
+    """
+    try:
+        value = float(rating)
+    except (TypeError, ValueError):
+        return str(rating)
+    full = int(value)
+    half = "½" if value - full >= 0.5 else ""
+    # Half a star on its own would render as a lone "½", so fall back to the number.
+    if not full and half:
+        return "½ star"
+    return f"{'★' * full}{half}"
 
 
 def _parse_tags(tags_text: str) -> tuple[str, ...]:
@@ -168,10 +185,10 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
                 )
 
             embed = discord.Embed(
-                title="Queued For Letterboxd",
+                title="Sending to Letterboxd",
                 description=(
-                    f"**{self.movie_title} ({self.movie_year})** was queued with **{rating} ★**.\n"
-                    f"Job: `{job.id}`"
+                    f"**{self.movie_title} ({self.movie_year})** — {format_stars(rating)}\n"
+                    f"-# Job `{job.id}`"
                 ),
                 color=discord.Color.orange(),
                 timestamp=discord.utils.utcnow()
@@ -194,21 +211,28 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
         except RatingJobAlreadyCompletedError:
             viewed_at_dt = to_aware_datetime(self.last_viewed_at) or discord.utils.utcnow()
             embed = discord.Embed(
-                title="Already Rated",
-                description=f"**{self.movie_title} ({self.movie_year})** already has a successful Letterboxd result.",
+                title="Already in your diary",
+                description=(
+                    f"**{self.movie_title} ({self.movie_year})** was already logged on Letterboxd, "
+                    "so nothing was sent again."
+                ),
                 color=discord.Color.green(),
                 timestamp=viewed_at_dt,
             )
             embed.set_author(name="Letterboxd Rating", icon_url="https://i.imgur.com/0Yd2L4i.png")
             await interaction.followup.send(embed=embed, ephemeral=True)
             if self.parent_view and self.original_message:
-                self.parent_view.mark_succeeded(rating=rating, viewed_at_dt=viewed_at_dt)
+                self.parent_view.mark_succeeded(rating=rating)
                 await self.original_message.edit(view=self.parent_view)
         except Exception as e:
             logger.error(f"Failed to enqueue movie for Letterboxd: {str(e)}")
+            reason = str(e).strip() or e.__class__.__name__
             embed = discord.Embed(
-                title="❌ Queue Failed!",
-                description=f"Error: {str(e)[:300]}{'...' if len(str(e)) > 300 else ''}",
+                title="Could not queue this entry",
+                description=(
+                    f"**{self.movie_title} ({self.movie_year})** was not sent to Letterboxd.\n"
+                    f"-# {reason[:300]}{'…' if len(reason) > 300 else ''}"
+                ),
                 color=discord.Color.red(),
                 timestamp=discord.utils.utcnow()
             )
@@ -247,17 +271,26 @@ class MovieButtons(View):
 
     def mark_queued(self) -> None:
         self.diary_button.disabled = True
-        self.diary_button.label = "Queued for Letterboxd..."
+        self.diary_button.label = "Sending to Letterboxd…"
+        self.diary_button.emoji = "⏳"
         self.diary_button.style = discord.ButtonStyle.secondary
 
-    def mark_succeeded(self, rating: float, viewed_at_dt: datetime) -> None:
+    def mark_succeeded(self, rating: float) -> None:
+        """Show the rating that was written.
+
+        No date here: the embed's own timestamp already says when the film was watched,
+        and button labels are plain text, so a date could not be localised per viewer and
+        was rendered in the server's timezone for everyone.
+        """
         self.diary_button.disabled = True
-        self.diary_button.label = f"Rated {rating} ★ for {viewed_at_dt.strftime('%d.%m.%Y %H:%M')}"
-        self.diary_button.style = discord.ButtonStyle.secondary
+        self.diary_button.label = f"Logged {format_stars(rating)}"
+        self.diary_button.emoji = "✅"
+        self.diary_button.style = discord.ButtonStyle.success
 
     def mark_failed(self) -> None:
         self.diary_button.disabled = False
-        self.diary_button.label = "Retry Diary Entry"
+        self.diary_button.label = "Retry"
+        self.diary_button.emoji = "🔁"
         self.diary_button.style = discord.ButtonStyle.danger
     
     async def diary_button_callback(self, interaction: discord.Interaction):

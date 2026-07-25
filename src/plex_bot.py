@@ -618,7 +618,7 @@ class PlexDiscordBot(commands.Bot):
                 rating_key=event.plex_rating_key,
                 watch_event_id=event.id,
             )
-            view.mark_succeeded(rating=result.rating_value, viewed_at_dt=viewed_at_dt)
+            view.mark_succeeded(rating=result.rating_value)
             await message.edit(view=view)
         except Exception as exc:
             logger.error(f"Failed to update success state in Discord: {exc}")
