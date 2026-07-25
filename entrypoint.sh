@@ -34,4 +34,22 @@ if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
     echo "entrypoint: display $DISPLAY not ready; continuing without it" >&2
 fi
 
-exec python -u plex_bot.py
+# Run the bot in the background and wait, rather than exec'ing it: exec would replace this
+# shell and discard the trap above, leaving Xvfb unreaped. It also means SIGTERM has to be
+# forwarded by hand so `docker stop` shuts the bot down instead of timing out into SIGKILL.
+python -u plex_bot.py &
+BOT_PID=$!
+
+forward_term() {
+    kill -TERM "$BOT_PID" 2>/dev/null || true
+}
+trap forward_term TERM INT
+
+wait "$BOT_PID"
+BOT_EXIT=$?
+# `wait` reports 128+signal when interrupted; wait again so the real exit status surfaces.
+if [ "$BOT_EXIT" -gt 128 ]; then
+    wait "$BOT_PID" 2>/dev/null
+    BOT_EXIT=$?
+fi
+exit "$BOT_EXIT"

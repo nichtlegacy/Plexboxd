@@ -15,6 +15,7 @@ from logging_config import DiscordHandler
 from views import MovieButtons
 import platform
 import requests
+import signal
 import sqlite3
 from contextlib import contextmanager
 from uuid import uuid5, NAMESPACE_URL
@@ -947,6 +948,15 @@ class PlexDiscordBot(commands.Bot):
 
 def main():
     """Run the Plex Discord bot."""
+    # discord.py only unwinds cleanly on KeyboardInterrupt, and `docker stop` sends
+    # SIGTERM. Without this the process ignored it and Docker escalated to SIGKILL after
+    # its timeout, so every restart was a hard kill (exit 137).
+    def _terminate(signum, _frame):
+        logger.info(f"Received signal {signum}; shutting down")
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _terminate)
+
     bot = PlexDiscordBot()
     bot.run(DISCORD_TOKEN)
 
