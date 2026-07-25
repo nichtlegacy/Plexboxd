@@ -7,6 +7,9 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
+      # Log timestamps follow this zone. Without it the container runs in UTC, so log
+      # lines look hours off from your own clock. Set TZ in .env to override.
+      - TZ=${TZ:-UTC}
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data

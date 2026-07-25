@@ -85,6 +85,9 @@ def setup_logging():
     log_dir = resolve_data_path(os.getenv("PLEXBOXD_LOG_DIR", "logs"))
     os.makedirs(log_dir, exist_ok=True)
 
+    # Timestamps follow the container's local time so they match the operator's wall
+    # clock. Set TZ (e.g. TZ=Europe/Berlin) to pick that zone; without it Docker images
+    # default to UTC, which made log lines look hours off.
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(formatter)
@@ -96,7 +99,9 @@ def setup_logging():
             interval=1,
             backupCount=7,
             encoding='utf-8',
-            utc=True
+            # Rotate on the same clock the timestamps use, otherwise the file would roll
+            # over in the middle of the logged day.
+            utc=False
         )
         handler.setFormatter(formatter)
         handler.suffix = "%Y-%m-%d"
@@ -579,7 +584,16 @@ class PlexDiscordBot(commands.Bot):
     async def _handle_rating_job_success(self, job, result) -> None:
         event = self.app.watch_events.get_by_id(job.watch_event_id)
         if event is None:
+            logger.error(f"Rating job {job.id} succeeded but its watch event is gone")
             return
+
+        # Successes were silent: only failures logged, so a working rating left no trace
+        # in plex_bot.log or the Discord log channel.
+        logger.info(
+            f"Logged {event.title} ({event.year}) on Letterboxd with "
+            f"{result.rating_value} stars (entry {result.letterboxd_entry_id})"
+        )
+
         notification = self.app.notifications.get_latest_for_watch_event(event.id)
         if notification is not None:
             self.app.notifications.update_view_state(notification.id, "succeeded", self.app.clock.now())

@@ -99,3 +99,20 @@ def test_letterboxd_logger_writes_to_its_own_file(monkeypatch, tmp_path) -> None
         handler.flush()
 
     assert "diary write failed" in (log_dir / "letterboxd_integration.log").read_text(encoding="utf-8")
+
+
+def test_file_handler_rotates_on_the_logged_clock(monkeypatch, tmp_path) -> None:
+    """Timestamps are local, so rotation must not use UTC or it rolls mid-day."""
+    import logging.handlers
+
+    monkeypatch.setenv("PLEXBOXD_LOG_DIR", str(tmp_path / "logs"))
+    module = _load_plex_bot(monkeypatch, dict(REQUIRED_ENV))
+    module.setup_logging()
+
+    handlers = [
+        handler
+        for handler in logging.getLogger("PlexBot").handlers
+        if isinstance(handler, logging.handlers.TimedRotatingFileHandler)
+    ]
+    assert handlers
+    assert all(handler.utc is False for handler in handlers)
