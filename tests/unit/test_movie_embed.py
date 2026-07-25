@@ -83,12 +83,21 @@ def test_footer_is_the_label_alone(utils_module) -> None:
     assert "2026" not in embed.footer.text
 
 
-def test_last_viewed_uses_dynamic_timestamp_on_rewatch(utils_module) -> None:
+def test_last_viewed_uses_dynamic_timestamps_on_rewatch(utils_module) -> None:
     """Replaces a hardcoded d.m.Y string that ignored the viewer's timezone."""
-    embed = _build(utils_module, view_count=2, previous_viewed_at="2026-03-01T21:15:00")
+    previous = "2026-03-01T21:15:00"
+    embed = _build(utils_module, view_count=2, previous_viewed_at=previous)
 
     field = next(f for f in embed.fields if "Last Viewed" in f.name)
-    assert field.value == utils_module.discord_timestamp("2026-03-01T21:15:00", "R")
+    # The date answers "when", the relative line "how long ago".
+    assert utils_module.discord_timestamp(previous, "D") in field.value
+    assert utils_module.discord_timestamp(previous, "R") in field.value
+
+
+def test_last_viewed_is_absent_on_a_first_watch(utils_module) -> None:
+    embed = _build(utils_module, view_count=1)
+
+    assert not any("Last Viewed" in f.name for f in embed.fields)
 
 
 def test_embed_still_builds_without_a_watch_time(utils_module) -> None:

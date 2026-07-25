@@ -40,12 +40,14 @@ async def create_movie_embed(movie_details: Dict) -> Tuple[discord.Embed, Option
     # If rewatch: View Count in same row as Library, Last Viewed (previous date) in next row
     if movie_details['view_count'] > 1 and movie_details.get('previous_viewed_at'):
         embed.add_field(name="📊 View Count", value=str(movie_details['view_count']), inline=True)
-        # A dynamic timestamp instead of a fixed d.m.Y string: field values do render
-        # markdown, so each viewer sees this in their own timezone and format.
-        previous_viewed = discord_timestamp(movie_details['previous_viewed_at'], "R")
+        # Dynamic timestamps instead of a fixed d.m.Y string: field values do render
+        # markdown, so each viewer sees this in their own timezone and locale. The date
+        # answers "when did I last see this", the relative line how long ago that was.
+        previous_date = discord_timestamp(movie_details['previous_viewed_at'], "D")
+        previous_relative = discord_timestamp(movie_details['previous_viewed_at'], "R")
         embed.add_field(
             name="👀 Last Viewed",
-            value=previous_viewed or "Unknown",
+            value=f"{previous_date}\n-# {previous_relative}" if previous_date else "Unknown",
             inline=True
         )
         embed.add_field(name="\u200b", value="\u200b", inline=True)  # Empty field for alignment
