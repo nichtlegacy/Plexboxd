@@ -25,6 +25,7 @@ Plexboxd is a Discord bot that automatically tracks movies watched on Plex and i
 ## Requirements
 
 - Python 3.7+
+- Node.js 20+
 - A Discord account and a Discord server where you have admin permissions
 - A Plex Media Server
 - A Letterboxd account
@@ -40,6 +41,7 @@ cd plexboxd
 2. Install the required dependencies
 ```bash
 pip install -r requirements.txt
+npm install
 ```
 
 3. Create a `.env` file based on the provided `.env.example`
@@ -127,6 +129,15 @@ services:
    LETTERBOXD_USERNAME=your-letterboxd-username
    LETTERBOXD_PASSWORD=your-letterboxd-password
    DATE_THRESHOLD_HOUR=7
+   LETTERBOXD_BROWSER_PACKAGE=patchright
+   LETTERBOXD_BROWSER_PROFILE_DIR=data/letterboxd-browser-profile
+   LETTERBOXD_BROWSER_HEADLESS=false
+   LETTERBOXD_BROWSER_AUTH=true
+   LETTERBOXD_BROWSER_FALLBACK=true
+   LETTERBOXD_MAX_RETRIES=3
+   LETTERBOXD_BASE_BACKOFF_SECONDS=5.0
+   LETTERBOXD_TIMEOUT_SECONDS=20
+   LETTERBOXD_IMPERSONATE=
    ```
 
 3. (Optional, but recommended) Create the `logs` and `data` directories for persistence:
@@ -174,6 +185,15 @@ The `.env` file contains all the necessary configuration parameters:
 - `LETTERBOXD_USERNAME`: Your Letterboxd username
 - `LETTERBOXD_PASSWORD`: Your Letterboxd password
 - `DATE_THRESHOLD_HOUR`: Hour (in 24-hour format) to determine the cutoff for assigning movie watch dates (default: 7)
+- `LETTERBOXD_BROWSER_PACKAGE`: Preferred Node package for authenticated browser automation (`patchright` recommended)
+- `LETTERBOXD_BROWSER_PROFILE_DIR`: Persistent browser profile path used for stable session reuse in Docker
+- `LETTERBOXD_BROWSER_HEADLESS`: Run authenticated browser automation headless (`false` recommended for Letterboxd)
+- `LETTERBOXD_BROWSER_AUTH`: Use the browser flow for session bootstrap and verification
+- `LETTERBOXD_BROWSER_FALLBACK`: Allow the browser to refresh the session (and write as a last resort) when the direct HTTP write is blocked
+- `LETTERBOXD_MAX_RETRIES`: Maximum retries for a single diary operation
+- `LETTERBOXD_BASE_BACKOFF_SECONDS`: Base backoff (with exponential retry and jitter)
+- `LETTERBOXD_TIMEOUT_SECONDS`: HTTP and browser wait timeout
+- `LETTERBOXD_IMPERSONATE`: Optional comma-separated `curl_cffi` impersonation profiles. Leave empty for the verified default (`chrome136,firefox135,safari184`)
 
 ### How to Get Required Tokens
 
@@ -204,7 +224,8 @@ The `.env` file contains all the necessary configuration parameters:
 │  ├─ letterboxd_integration.log    # Letterboxd integration logs
 │  └─ plex_bot.log                  # Main bot logs
 ├─ /src                             # Source code
-│  ├─ letterboxd_integration.py     # Letterboxd API interaction and logging
+│  ├─ letterboxd_client/            # Browser runtime, session, resolver, diary writer
+│  ├─ letterboxd_integration.py     # Letterboxd facade + logging
 │  ├─ logging_config.py             # Logging configuration for the bot
 │  ├─ plex_bot.py                   # Main bot code and Plex monitoring
 │  ├─ utils.py                      # Utility functions for Discord embeds
@@ -228,10 +249,18 @@ The `.env` file contains all the necessary configuration parameters:
    ![Rating Interface](https://i.imgur.com/9cOsJwx.png)
 
 4. **Letterboxd Integration**: When you rate a movie, the bot:
-   - Logs into your Letterboxd account using `requests`
-   - Searches for the movie using Selenium (headless)
-   - Adds it to your diary with the correct date and rating via `requests`
+   - Resolves the film via TMDb redirect first, then a search fallback
+   - Looks up the film's base-62 LID from `/film/<slug>/json/` (the write API rejects the numeric film id)
+   - Writes the diary entry over plain HTTP with `POST /api/v0/production-log-entries`, sending rating, like, rewatch, tags and review
+   - Verifies the values Letterboxd echoes back and fails the job on any mismatch
    - Confirms the action with a success message
+
+   Only the **login** needs a browser. `Patchright` drives a real headed Chromium
+   (against Xvfb in Docker) to obtain the Cloudflare `cf_clearance` cookie, which is
+   then persisted to `data/letterboxd_cookies.json` and reused by the HTTP client. So a
+   rating normally takes a second or two with no browser launch; the browser only starts
+   again when the session expires. If a write is still blocked after a refresh, the
+   browser performs it as a last resort.
 
    ![Rating Confirmation](https://i.imgur.com/ukaeAVI.png)
 
@@ -268,7 +297,8 @@ Both logs can also be forwarded to a Discord channel using the `DISCORD_LOGGING_
 2. **Letterboxd integration fails**
    - Verify your Letterboxd credentials
    - Check if Letterboxd is experiencing downtime
-   - Ensure you have Chrome installed for Selenium (used for movie search)
+   - Ensure Chromium and Chromedriver are installed and version-matched
+   - Keep `./data` mounted in Docker so the Chrome profile/session persists
 
 3. **Discord notifications aren't showing up**
    - Verify your bot has proper permissions in the Discord server
@@ -294,7 +324,8 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - [Letterboxd](https://letterboxd.com) for their movie logging and rating service, which inspired the core integration of this bot.
 - [Discord](https://discord.com) for their robust API and bot framework, enabling seamless notifications and interactions.
 - [PlexAPI](https://github.com/pkkid/python-plexapi) - A Python library for interacting with Plex servers, heavily utilized in this project for movie tracking.
-- [Selenium](https://www.selenium.dev) - Used for headless browser automation to search for movies on Letterboxd.
+- [curl_cffi](https://github.com/lexiforest/curl_cffi) - Browser-impersonating HTTP client used for Letterboxd film lookups and diary writes.
+- [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright) - Drives a real Chromium session for the Letterboxd login that mints the Cloudflare clearance cookie.
 - [discord.py](https://github.com/Rapptz/discord.py) - The backbone of the Discord bot functionality, making embeds and interactive components possible.
 
 ## Disclaimer

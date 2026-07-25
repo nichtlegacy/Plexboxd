@@ -1,0 +1,2 @@
+"""Entrypoints for Plexboxd."""
+

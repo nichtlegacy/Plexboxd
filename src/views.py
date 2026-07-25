@@ -4,10 +4,27 @@ from discord.ui import Button, View, Modal, TextInput, Select, Label
 from discord import TextStyle, SelectOption
 import logging
 from datetime import datetime
-import cloudscraper
-from letterboxd_integration import login, get_film_id_selenium, save_diary_entry
+
+from plexboxd.application.rating_jobs import RatingJobAlreadyCompletedError
+from plexboxd.domain.models import RatingRequest
 
 logger = logging.getLogger('PlexBot')
+
+
+def _parse_tags(tags_text: str) -> tuple[str, ...]:
+    """Split free-form tag input into individual Letterboxd tags.
+
+    Accepts comma- or whitespace-separated input and drops duplicates while keeping
+    the order the user typed.
+    """
+    if not tags_text:
+        return ()
+    parts = [part.strip() for part in tags_text.replace(',', ' ').split()]
+    seen: dict[str, None] = {}
+    for part in parts:
+        if part:
+            seen.setdefault(part, None)
+    return tuple(seen)
 
 
 class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
@@ -76,9 +93,9 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
         ),
     )
     
-    def __init__(self, movie_title: str, movie_year: int, original_title: str = None, 
-                 last_viewed_at: str = None, tmdb_id: str = None, bot=None, 
-                 rating_key: str = None, is_rewatch: bool = False,
+    def __init__(self, movie_title: str, movie_year: int, original_title: str = None,
+                 last_viewed_at: str = None, tmdb_id: str = None, bot=None,
+                 rating_key: str = None, watch_event_id: str = None, is_rewatch: bool = False,
                  parent_view=None, original_message=None):
         super().__init__()
         
@@ -89,6 +106,7 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
         self.tmdb_id = tmdb_id
         self.bot = bot
         self.rating_key = rating_key
+        self.watch_event_id = watch_event_id
         self.parent_view = parent_view
         self.original_message = original_message
         
@@ -104,7 +122,7 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
             ]
     
     async def on_submit(self, interaction: discord.Interaction):
-        """Handle modal submission and log to Letterboxd."""
+        """Handle modal submission by enqueueing a Letterboxd job."""
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -120,82 +138,75 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
             is_liked = self.liked.component.values[0] == 'yes'
             tags_text = self.tags.component.value.strip() if self.tags.component.value else ""
             review_text = self.review.component.value.strip() if self.review.component.value else ""
+            if not self.bot or not getattr(self.bot, "app", None) or not self.watch_event_id:
+                raise RuntimeError("Rating queue is not initialized for this notification")
 
-            # Run Letterboxd integration in a thread pool to avoid blocking Discord event loop
-            import asyncio
-            from functools import partial
+            notification = None
+            if interaction.message is not None:
+                notification = self.bot.app.notifications.get_by_discord_message_id(str(interaction.message.id))
 
-            def letterboxd_sync_operation():
-                # Log to Letterboxd with Cloudflare bypass
-                session = cloudscraper.create_scraper(
-                    browser={
-                        'browser': 'chrome',
-                        'platform': 'windows',
-                        'mobile': False
-                    }
-                )
-                session.headers.update({
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-                    "Referer": "https://letterboxd.com/",
-                })
-                csrf_token = login(session)
-                film_id = get_film_id_selenium(
-                    session, self.movie_title, self.movie_year,
-                    self.original_title, tmdb_id=self.tmdb_id
-                )
-                if not film_id:
-                    raise ValueError(f"Could not find film ID for '{self.original_title}' ({self.movie_year})")
-
-                save_diary_entry(
-                    session, csrf_token, film_id, rating,
-                    viewing_date=self.last_viewed_at,
-                    rewatch=is_rewatch,
-                    liked=is_liked,
-                    tags=tags_text,
-                    review=review_text
-                )
-
-            # Run in thread pool to avoid blocking Discord
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, letterboxd_sync_operation)
-
-            # Build success message (matching original format)
-            viewed_at_dt = datetime.fromisoformat(self.last_viewed_at) if self.last_viewed_at else datetime.now()
-            
-            embed = discord.Embed(
-                title="Rating Successful!",
-                description=f"**{self.movie_title} ({self.movie_year})** rated **{rating} ★** on Letterboxd.",
-                color=discord.Color.green(),
-                timestamp=viewed_at_dt
+            request = RatingRequest(
+                rating=rating,
+                liked=is_liked,
+                rewatch=is_rewatch,
+                requested_by_discord_user_id=str(interaction.user.id),
+                tags=_parse_tags(tags_text),
+                review=review_text,
             )
-            embed.set_author(name="Letterboxd Rating", icon_url="https://i.imgur.com/0Yd2L4i.png")
-            
+
+            job = self.bot.app.rating_job_service.enqueue(
+                self.watch_event_id,
+                notification.id if notification else None,
+                request,
+            )
+            if notification is not None:
+                self.bot.app.notifications.update_view_state(
+                    notification.id,
+                    "queued",
+                    self.bot.app.clock.now(),
+                )
+
+            embed = discord.Embed(
+                title="Queued For Letterboxd",
+                description=(
+                    f"**{self.movie_title} ({self.movie_year})** was queued with **{rating} ★**.\n"
+                    f"Job: `{job.id}`"
+                ),
+                color=discord.Color.orange(),
+                timestamp=datetime.now()
+            )
+            parsed_tags = _parse_tags(tags_text)
+            if parsed_tags:
+                embed.add_field(name="Tags", value=", ".join(parsed_tags), inline=False)
+            if review_text:
+                preview = review_text if len(review_text) <= 200 else f"{review_text[:200]}…"
+                embed.add_field(name="Review", value=preview, inline=False)
+            embed.set_author(name="Letterboxd Queue", icon_url="https://i.imgur.com/0Yd2L4i.png")
             await interaction.followup.send(embed=embed, ephemeral=True)
-            
-            # Disable the button after successful submission (matching original format)
+
             if self.parent_view and self.original_message:
                 try:
-                    self.parent_view.diary_button.disabled = True
-                    self.parent_view.diary_button.label = f"Rated {rating} ★ for {viewed_at_dt.strftime('%d.%m.%Y %H:%M')}"
-                    self.parent_view.diary_button.style = discord.ButtonStyle.secondary
+                    self.parent_view.mark_queued()
                     await self.original_message.edit(view=self.parent_view)
                 except Exception as e:
-                    logger.warning(f"Could not disable button: {str(e)}")
-            
-            # Mark as rated in database
-            if self.bot and self.bot.plex_monitor and self.rating_key:
-                try:
-                    with self.bot.plex_monitor.db._get_connection() as conn:
-                        conn.execute('UPDATE movies SET is_rated = 1 WHERE rating_key = ?', (self.rating_key,))
-                        conn.commit()
-                        logger.info(f"Marked {self.movie_title} ({self.movie_year}) as rated in database")
-                except Exception as e:
-                    logger.error(f"Failed to update rating status in database: {str(e)}")
-            
-        except Exception as e:
-            logger.error(f"Failed to log movie on Letterboxd: {str(e)}")
+                    logger.warning(f"Could not update queued button state: {str(e)}")
+        except RatingJobAlreadyCompletedError:
+            viewed_at_dt = datetime.fromisoformat(self.last_viewed_at) if self.last_viewed_at else datetime.now()
             embed = discord.Embed(
-                title="❌ Diary Entry Failed!",
+                title="Already Rated",
+                description=f"**{self.movie_title} ({self.movie_year})** already has a successful Letterboxd result.",
+                color=discord.Color.green(),
+                timestamp=viewed_at_dt,
+            )
+            embed.set_author(name="Letterboxd Rating", icon_url="https://i.imgur.com/0Yd2L4i.png")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            if self.parent_view and self.original_message:
+                self.parent_view.mark_succeeded(rating=rating, viewed_at_dt=viewed_at_dt)
+                await self.original_message.edit(view=self.parent_view)
+        except Exception as e:
+            logger.error(f"Failed to enqueue movie for Letterboxd: {str(e)}")
+            embed = discord.Embed(
+                title="❌ Queue Failed!",
                 description=f"Error: {str(e)[:300]}{'...' if len(str(e)) > 300 else ''}",
                 color=discord.Color.red(),
                 timestamp=datetime.now()
@@ -211,8 +222,9 @@ class DiaryEntryModal(Modal, title='Letterboxd Diary Entry'):
 class MovieButtons(View):
     """Interactive button for logging movies on Letterboxd."""
     
-    def __init__(self, movie_title: str, movie_year: int, original_title: str = None, 
-                 last_viewed_at: str = None, tmdb_id: str = None, bot=None, rating_key: str = None):
+    def __init__(self, movie_title: str, movie_year: int, original_title: str = None,
+                 last_viewed_at: str = None, tmdb_id: str = None, bot=None,
+                 rating_key: str = None, watch_event_id: str = None):
         super().__init__(timeout=None)
         self.movie_title = movie_title
         self.movie_year = movie_year
@@ -221,15 +233,31 @@ class MovieButtons(View):
         self.tmdb_id = tmdb_id
         self.bot = bot
         self.rating_key = rating_key
+        self.watch_event_id = watch_event_id
         
         # Create the diary entry button
         self.diary_button = Button(
             label="📝 Diary Entry",
             style=discord.ButtonStyle.primary,
-            custom_id=f"diary_entry_{movie_title}_{movie_year}_{last_viewed_at or 'latest'}"
+            custom_id=f"diary_entry_{watch_event_id or rating_key or movie_year}"
         )
         self.diary_button.callback = self.diary_button_callback
         self.add_item(self.diary_button)
+
+    def mark_queued(self) -> None:
+        self.diary_button.disabled = True
+        self.diary_button.label = "Queued for Letterboxd..."
+        self.diary_button.style = discord.ButtonStyle.secondary
+
+    def mark_succeeded(self, rating: float, viewed_at_dt: datetime) -> None:
+        self.diary_button.disabled = True
+        self.diary_button.label = f"Rated {rating} ★ for {viewed_at_dt.strftime('%d.%m.%Y %H:%M')}"
+        self.diary_button.style = discord.ButtonStyle.secondary
+
+    def mark_failed(self) -> None:
+        self.diary_button.disabled = False
+        self.diary_button.label = "Retry Diary Entry"
+        self.diary_button.style = discord.ButtonStyle.danger
     
     async def diary_button_callback(self, interaction: discord.Interaction):
         """Open the diary entry modal when button is clicked."""
@@ -255,6 +283,7 @@ class MovieButtons(View):
             tmdb_id=self.tmdb_id,
             bot=self.bot,
             rating_key=self.rating_key,
+            watch_event_id=self.watch_event_id,
             is_rewatch=is_rewatch,
             parent_view=self,
             original_message=interaction.message

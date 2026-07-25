@@ -1,0 +1,7 @@
+{
+  "name": "plexboxd-browser-runtime",
+  "private": true,
+  "dependencies": {
+    "patchright": "1.55.2"
+  }
+}

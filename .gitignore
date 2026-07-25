@@ -6,16 +6,22 @@ logs
 *.log
 
 # Data directories with generated or sensitive content
+# (holds the Letterboxd session cookies and browser profile - never commit)
 data
 
 docs
-
-tests
 
 # Python-specific files and directories
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+node_modules/
 venv/
 .env.local
+
+# Local tooling / OS noise
+.DS_Store
+.playwright-cli/
+htmlcov/
+.pytest_cache/

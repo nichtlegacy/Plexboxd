@@ -17,6 +17,11 @@ import platform
 import requests
 import sqlite3
 from contextlib import contextmanager
+from uuid import uuid5, NAMESPACE_URL
+
+from plexboxd.domain.models import NotificationRecord, WatchEvent
+from plexboxd.infrastructure.bootstrap import build_application_container
+from plexboxd.infrastructure.queue.worker import RatingJobWorker
 
 # Set event loop policy for Windows compatibility with aiodns
 if platform.system() == "Windows":
@@ -479,14 +484,136 @@ class PlexDiscordBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix='!', intents=intents)
         self.plex_monitor = PlexMonitor()
+        self.app = build_application_container(os.path.join(SCRIPT_DIR, "../data/plexboxd.db"))
         self.notify_channel = None
+        self._runtime_loop = None
+        self.rating_worker = RatingJobWorker(
+            watch_event_repository=self.app.watch_events,
+            rating_job_service=self.app.rating_job_service,
+            rating_execution_service=self.app.rating_execution_service,
+            success_callback=self._on_rating_job_success,
+            failure_callback=self._on_rating_job_failure,
+        )
     async def setup_hook(self):
         """Initialize bot and Plex connection."""
         check_latest_version()
+        self._runtime_loop = asyncio.get_running_loop()
         
         if not await self.plex_monitor.initialize():
             logger.error("Bot startup aborted due to Plex connection failure")
             await self.close()
+
+    def _dispatch_async(self, coroutine) -> None:
+        if self._runtime_loop is None:
+            return
+        self._runtime_loop.call_soon_threadsafe(lambda: asyncio.create_task(coroutine))
+
+    def _build_watch_event(self, movie_details: Dict) -> WatchEvent:
+        watched_at = datetime.fromisoformat(movie_details["last_viewed_at"])
+        event_key = f"{movie_details['ratingKey']}|{movie_details['last_viewed_at']}"
+        return WatchEvent(
+            id=str(uuid5(NAMESPACE_URL, event_key)),
+            plex_rating_key=movie_details["ratingKey"],
+            plex_guid_hash=movie_details.get("tmdb_id") or movie_details["ratingKey"],
+            tmdb_id=movie_details.get("tmdb_id"),
+            title=movie_details["title"],
+            original_title=movie_details.get("original_title"),
+            year=movie_details.get("year"),
+            watched_at=watched_at,
+            detected_at=self.app.clock.now(),
+            view_count_at_watch=movie_details.get("view_count"),
+            library_name=movie_details.get("library"),
+            raw_payload=dict(movie_details),
+        )
+
+    def _ensure_watch_event(self, movie_details: Dict) -> WatchEvent:
+        return self.app.watch_ingest.ingest(self._build_watch_event(movie_details))
+
+    def _ensure_notification_record(self, watch_event_id: str, message_id: int) -> NotificationRecord:
+        existing = self.app.notifications.get_by_discord_message_id(str(message_id))
+        if existing is not None:
+            return existing
+        return self.app.notifications.add(
+            NotificationRecord(
+                id=self.app.id_factory.new("notification"),
+                watch_event_id=watch_event_id,
+                discord_channel_id=str(self.notify_channel.id),
+                discord_message_id=str(message_id),
+                discord_view_state="pending_rating",
+                sent_at=self.app.clock.now(),
+                updated_at=self.app.clock.now(),
+            )
+        )
+
+    def _on_rating_job_success(self, job, result) -> None:
+        self._dispatch_async(self._handle_rating_job_success(job, result))
+
+    def _on_rating_job_failure(self, job, exc: Exception) -> None:
+        self._dispatch_async(self._handle_rating_job_failure(job, exc))
+
+    async def _handle_rating_job_success(self, job, result) -> None:
+        event = self.app.watch_events.get_by_id(job.watch_event_id)
+        if event is None:
+            return
+        notification = self.app.notifications.get_latest_for_watch_event(event.id)
+        if notification is not None:
+            self.app.notifications.update_view_state(notification.id, "succeeded", self.app.clock.now())
+        if event.plex_rating_key:
+            try:
+                with self.plex_monitor.db._get_connection() as conn:
+                    conn.execute('UPDATE movies SET is_rated = 1 WHERE rating_key = ?', (event.plex_rating_key,))
+                    conn.commit()
+            except Exception as exc:
+                logger.error(f"Failed to mark legacy movie row as rated: {exc}")
+        if not notification or not self.notify_channel:
+            return
+        try:
+            message = await self.notify_channel.fetch_message(int(notification.discord_message_id))
+            movie = self.plex_monitor.db.get_movie(event.plex_rating_key) or {}
+            viewed_at_dt = event.watched_at
+            view = MovieButtons(
+                movie_title=movie.get("title", event.title),
+                movie_year=movie.get("year", event.year),
+                original_title=movie.get("original_title", event.original_title),
+                last_viewed_at=viewed_at_dt.isoformat(),
+                tmdb_id=movie.get("tmdb_id", event.tmdb_id),
+                bot=self,
+                rating_key=event.plex_rating_key,
+                watch_event_id=event.id,
+            )
+            view.mark_succeeded(rating=result.rating_value, viewed_at_dt=viewed_at_dt)
+            await message.edit(view=view)
+        except Exception as exc:
+            logger.error(f"Failed to update success state in Discord: {exc}")
+
+    async def _handle_rating_job_failure(self, job, exc: Exception) -> None:
+        event = self.app.watch_events.get_by_id(job.watch_event_id)
+        if event is None:
+            return
+        notification = self.app.notifications.get_latest_for_watch_event(event.id)
+        if notification is not None:
+            self.app.notifications.update_view_state(notification.id, "failed", self.app.clock.now())
+        if not notification or not self.notify_channel:
+            logger.error(f"Rating job {job.id} failed: {exc}")
+            return
+        try:
+            message = await self.notify_channel.fetch_message(int(notification.discord_message_id))
+            movie = self.plex_monitor.db.get_movie(event.plex_rating_key) or {}
+            view = MovieButtons(
+                movie_title=movie.get("title", event.title),
+                movie_year=movie.get("year", event.year),
+                original_title=movie.get("original_title", event.original_title),
+                last_viewed_at=event.watched_at.isoformat(),
+                tmdb_id=movie.get("tmdb_id", event.tmdb_id),
+                bot=self,
+                rating_key=event.plex_rating_key,
+                watch_event_id=event.id,
+            )
+            view.mark_failed()
+            await message.edit(view=view)
+        except Exception as notify_exc:
+            logger.error(f"Failed to update failed state in Discord: {notify_exc}")
+        logger.error(f"Rating job {job.id} failed: {exc}")
 
     async def restore_views(self):
         """Restore dropdown menus for the last 2 unwatched movies."""
@@ -519,6 +646,17 @@ class PlexDiscordBot(commands.Bot):
                         continue
 
                     message = await self.notify_channel.fetch_message(int(message_id))
+                    watch_event = self._ensure_watch_event({
+                        "ratingKey": movie["rating_key"],
+                        "title": movie["title"],
+                        "original_title": movie.get("original_title", movie["title"]),
+                        "year": movie.get("year"),
+                        "last_viewed_at": movie.get("last_viewed_at"),
+                        "view_count": movie.get("view_count"),
+                        "library": None,
+                        "tmdb_id": movie.get("tmdb_id"),
+                    })
+                    self._ensure_notification_record(watch_event.id, int(message_id))
                     view = MovieButtons(
                         movie_title=movie['title'],
                         movie_year=movie['year'],
@@ -526,7 +664,8 @@ class PlexDiscordBot(commands.Bot):
                         last_viewed_at=movie.get('last_viewed_at'),
                         tmdb_id=movie.get('tmdb_id'),
                         bot=self,
-                        rating_key=movie['rating_key']
+                        rating_key=movie['rating_key'],
+                        watch_event_id=watch_event.id,
                     )
                     await message.edit(view=view)
                     restored_count += 1
@@ -646,6 +785,7 @@ class PlexDiscordBot(commands.Bot):
                             # Add previous viewing date for rewatch display
                             if stored_last_viewed:
                                 movie_details['previous_viewed_at'] = stored_last_viewed.isoformat()
+                            watch_event = self._ensure_watch_event(movie_details)
                             
                             embed, file = await self.create_movie_embed(movie_details)
                             view = MovieButtons(
@@ -655,7 +795,8 @@ class PlexDiscordBot(commands.Bot):
                                 last_viewed_at=movie_details.get('last_viewed_at'),
                                 tmdb_id=movie_details.get('tmdb_id'),
                                 bot=self,
-                                rating_key=movie_details['ratingKey']
+                                rating_key=movie_details['ratingKey'],
+                                watch_event_id=watch_event.id,
                             )
 
                             mention = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
@@ -674,6 +815,7 @@ class PlexDiscordBot(commands.Bot):
                             movie_details['is_rated'] = False
 
                             self.plex_monitor.db.save_movie(movie_details)
+                            self._ensure_notification_record(watch_event.id, message.id)
                             logger.info(f"Notification sent for: {movie_details['title']} ({movie_details['year']})")
                             
                             await asyncio.sleep(1)
@@ -697,6 +839,19 @@ class PlexDiscordBot(commands.Bot):
         """Create Discord embed for movie notification (placeholder, moved to utils)."""
         from utils import create_movie_embed
         return await create_movie_embed(movie_details)
+
+    @tasks.loop(seconds=15)
+    async def process_rating_jobs(self):
+        """Continuously drain queued rating jobs using the worker path."""
+        worker_id = f"discord-bot-{self.user.id if self.user else 'boot'}"
+        while True:
+            try:
+                processed = await asyncio.to_thread(self.rating_worker.run_once, worker_id)
+            except Exception as exc:
+                logger.error(f"Rating worker loop failed for one job: {exc}")
+                break
+            if not processed:
+                break
 
     async def on_ready(self):
         """Handle bot startup and channel setup."""
@@ -740,6 +895,14 @@ class PlexDiscordBot(commands.Bot):
                     logger.error(f"Failed to start check_recently_watched task: {str(e)}")
             else:
                 logger.info("check_recently_watched task is already running")
+
+            if not self.process_rating_jobs.is_running():
+                try:
+                    self.process_rating_jobs.start()
+                except Exception as e:
+                    logger.error(f"Failed to start process_rating_jobs task: {str(e)}")
+            else:
+                logger.info("process_rating_jobs task is already running")
                 
         except Exception as e:
             logger.error(f"Error in on_ready: {str(e)}")

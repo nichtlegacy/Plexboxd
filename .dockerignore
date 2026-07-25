@@ -1,0 +1,22 @@
+# Runtime state belongs in the mounted volume, not the image. Baking the browser
+# profile in would also ship session cookies into the published image.
+data/
+logs/
+
+# Installed inside the image by npm/pip.
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+.git/
+.github/
+.gitignore
+.playwright-cli/
+htmlcov/
+tests/
+.env
+.DS_Store
+*.md
+!readme.md
