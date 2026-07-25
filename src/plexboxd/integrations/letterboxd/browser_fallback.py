@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import time
@@ -9,16 +10,26 @@ from shutil import which
 
 from plexboxd.infrastructure.paths import project_root, resolve_data_path
 
-from .session import LetterboxdSessionError
+from .session import LetterboxdSessionError, cookie_file
+
+logger = logging.getLogger("LetterboxdIntegration")
 
 
 class BrowserLetterboxdClient:
     def __init__(self) -> None:
-        self.cookie_file = resolve_data_path(os.getenv("LETTERBOXD_SESSION_FILE", "data/letterboxd_cookies.json"))
+        # Must resolve the same variable as session.cookie_file(): the browser writes the
+        # bundle the HTTP client reads, and a mismatch silently forces every write through
+        # the browser.
+        self.cookie_file = cookie_file()
         self.script_path = Path(__file__).with_name("scripts") / "letterboxd_browser.cjs"
         # Headless Chrome gets challenged by Cloudflare on letterboxd.com where headful
         # does not, so default to headful and rely on xvfb-run when there is no display.
         self.headless = _env_bool("LETTERBOXD_BROWSER_HEADLESS", False)
+        if self.headless:
+            logger.warning(
+                "LETTERBOXD_BROWSER_HEADLESS is enabled; Cloudflare challenges headless "
+                "Chrome on letterboxd.com, so login will likely fail. Leave it unset."
+            )
         self.profile_dir = resolve_data_path(
             os.getenv("LETTERBOXD_BROWSER_PROFILE_DIR", "data/letterboxd-browser-profile")
         )

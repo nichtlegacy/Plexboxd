@@ -29,14 +29,34 @@ if platform.system() == "Windows":
 
 # Load environment variables
 load_dotenv()
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+
+def _required_env(name: str) -> str:
+    """Read a mandatory setting, failing with a message that names the variable."""
+    value = os.getenv(name)
+    if not value or not value.strip():
+        raise SystemExit(
+            f"Configuration error: {name} is not set. "
+            "Check your .env file (see .env.example) or the container environment."
+        )
+    return value.strip()
+
+
+def _required_int_env(name: str) -> int:
+    value = _required_env(name)
+    try:
+        return int(value)
+    except ValueError:
+        raise SystemExit(f"Configuration error: {name} must be a number, got {value!r}.") from None
+
+
+DISCORD_TOKEN = _required_env("DISCORD_TOKEN")
 DISCORD_LOGGING_WEBHOOK_URL = os.getenv("DISCORD_LOGGING_WEBHOOK_URL")
 DISCORD_USER_ID = os.getenv("DISCORD_USER_ID")
-PLEX_TOKEN = os.getenv("PLEX_TOKEN")
-PLEX_SERVER_URL = os.getenv("PLEX_SERVER_URL")
-NOTIFY_CHANNEL_ID = int(os.getenv("NOTIFY_CHANNEL_ID"))
-GUILD_ID = int(os.getenv("GUILD_ID"))
-PLEX_USERNAME = os.getenv("PLEX_USERNAME")
+PLEX_TOKEN = _required_env("PLEX_TOKEN")
+PLEX_SERVER_URL = _required_env("PLEX_SERVER_URL")
+NOTIFY_CHANNEL_ID = _required_int_env("NOTIFY_CHANNEL_ID")
+GUILD_ID = _required_int_env("GUILD_ID")
+PLEX_USERNAME = _required_env("PLEX_USERNAME")
 EXCLUDED_LIBRARIES = [lib.strip() for lib in os.getenv("EXCLUDED_LIBRARIES", "").split(",") if lib.strip()]
 
 # Global branding constants
@@ -45,7 +65,7 @@ LETTERBOXD_LOGO = "https://i.imgur.com/0Yd2L4i.png"
 EMBED_AUTHOR_NAME = "Plex Movie Notification 🎬"
 EMBED_FOOTER_TEXT = "Watched"
 
-CURRENT_VERSION = "1.2.8"
+CURRENT_VERSION = "1.3.0"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MOVIE_DATA_PATH = os.path.join(SCRIPT_DIR, '../data/movie_data.json')
@@ -93,19 +113,32 @@ def setup_logging():
 
 logger = setup_logging()
 
+def _version_tuple(version: str) -> tuple:
+    """Parse a version for ordered comparison.
+
+    Comparing version strings directly is wrong once a component reaches two digits
+    ("1.10.0" < "1.3.0" lexically), which would silently stop the update notice.
+    """
+    parts = []
+    for piece in (version or "").split("."):
+        digits = "".join(char for char in piece if char.isdigit())
+        parts.append(int(digits) if digits else 0)
+    return tuple(parts)
+
+
 def check_latest_version():
     """Check the latest version on GitHub and compare with the current version."""
     try:
         api_url = "https://api.github.com/repos/nichtlegacy/Plexboxd/releases/latest"
         response = requests.get(api_url, timeout=5)
         response.raise_for_status()
-        
+
         latest_version = response.json().get("tag_name", "unknown")
         cleaned_latest_version = latest_version.lstrip('v')
-        
+
         logger.info(f"Running version: v{CURRENT_VERSION} | Latest Version: v{cleaned_latest_version}")
-        
-        if cleaned_latest_version > CURRENT_VERSION:
+
+        if _version_tuple(cleaned_latest_version) > _version_tuple(CURRENT_VERSION):
             logger.warning(
                 "New version available! Please update from https://github.com/nichtlegacy/Plexboxd"
             )

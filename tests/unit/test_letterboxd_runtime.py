@@ -90,7 +90,7 @@ def test_expired_cookies_are_not_replayed(monkeypatch, tmp_path) -> None:
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr("plexboxd.integrations.letterboxd.session.COOKIE_FILE", cookie_file)
+    monkeypatch.setenv("LETTERBOXD_SESSION_FILE", str(cookie_file))
 
     session = LetterboxdSessionProvider()._load_persisted_session()
 
@@ -98,6 +98,36 @@ def test_expired_cookies_are_not_replayed(monkeypatch, tmp_path) -> None:
     names = {cookie.name for cookie in session.cookies.jar}
     assert "fresh" in names
     assert "letterboxd.signed.in.as" not in names
+
+
+def test_cookie_file_is_resolved_after_dotenv_load(monkeypatch, tmp_path) -> None:
+    """The path must not be captured at import time.
+
+    load_dotenv() runs during container bootstrap, so a module-level constant would
+    freeze the pre-.env value while the browser writer resolved the post-.env one,
+    leaving the two halves reading different files.
+    """
+    from plexboxd.integrations.letterboxd import session as session_module
+
+    monkeypatch.setenv("LETTERBOXD_SESSION_FILE", str(tmp_path / "late.json"))
+
+    assert session_module.cookie_file() == tmp_path / "late.json"
+
+
+def test_browser_and_http_agree_on_cookie_path(monkeypatch, tmp_path) -> None:
+    """Both halves of the hybrid flow must read and write the same cookie bundle."""
+    from plexboxd.integrations.letterboxd import browser_fallback
+    from plexboxd.integrations.letterboxd import session as session_module
+
+    monkeypatch.setenv("LETTERBOXD_SESSION_FILE", str(tmp_path / "shared.json"))
+    monkeypatch.setattr(
+        browser_fallback,
+        "_resolve_browser_node_module",
+        lambda preferred_package: (tmp_path, preferred_package),
+    )
+    monkeypatch.setattr(browser_fallback, "_resolve_browser_executable", lambda: None)
+
+    assert browser_fallback.BrowserLetterboxdClient().cookie_file == session_module.cookie_file()
 
 
 def test_extract_film_id_and_slug_from_tmdb_page() -> None:

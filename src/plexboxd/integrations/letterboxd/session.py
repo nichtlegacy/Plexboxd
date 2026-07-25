@@ -20,7 +20,7 @@ ACTIVITY_URL = f"{BASE_URL}/activity/"
 CSRF_COOKIE = "com.xk72.webparts.csrf"
 SIGNED_IN_COOKIE = "letterboxd.signed.in.as"
 CLEARANCE_COOKIE = "cf_clearance"
-COOKIE_FILE = resolve_data_path(os.getenv("LETTERBOXD_SESSION_FILE", "data/letterboxd_cookies.json"))
+DEFAULT_COOKIE_FILE = "data/letterboxd_cookies.json"
 
 # Only profiles verified to pass Cloudflare on both GET and POST against letterboxd.com.
 # Measured: chrome120 -> GET 200 but POST 403 (cf-mitigated: challenge);
@@ -69,6 +69,7 @@ class LetterboxdSessionProvider:
         self.password = os.getenv("LETTERBOXD_PASSWORD")
         self.timeout_seconds = int(os.getenv("LETTERBOXD_TIMEOUT_SECONDS", "20"))
         self.max_retries = int(os.getenv("LETTERBOXD_MAX_RETRIES", "3"))
+        self.base_backoff_seconds = float(os.getenv("LETTERBOXD_BASE_BACKOFF_SECONDS", "5.0"))
         self.impersonation_profiles = _configured_impersonation_profiles()
         self.browser_auth_enabled = os.getenv("LETTERBOXD_BROWSER_AUTH", "true").strip().lower() in {
             "1",
@@ -247,10 +248,11 @@ class LetterboxdSessionProvider:
         return session
 
     def _load_cookie_payload(self) -> list[dict] | None:
-        if not COOKIE_FILE.exists():
+        path = cookie_file()
+        if not path.exists():
             return None
         try:
-            with COOKIE_FILE.open("r", encoding="utf-8") as handle:
+            with path.open("r", encoding="utf-8") as handle:
                 payload = json.load(handle)
         except (OSError, ValueError, TypeError):
             return None
@@ -260,8 +262,9 @@ class LetterboxdSessionProvider:
         return payload if isinstance(payload, list) else None
 
     def _persist_cookie_payload(self, cookies: list[dict]) -> None:
-        COOKIE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with COOKIE_FILE.open("w", encoding="utf-8") as handle:
+        path = cookie_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
             json.dump({"cookies": cookies, "saved_at": int(time.time())}, handle, indent=2)
 
     def _save_session(self, session: curl_requests.Session) -> None:
@@ -364,7 +367,9 @@ class LetterboxdSessionProvider:
                 return response
 
             if attempt < self.max_retries - 1:
-                time.sleep(1 + attempt)
+                # Exponential backoff: every profile was challenged this round, so retrying
+                # immediately just burns through the rate limit.
+                time.sleep(self.base_backoff_seconds * (2 ** attempt))
 
         if last_response is not None and self._is_cloudflare_response(last_response):
             raise CloudflareChallengeError(
@@ -399,6 +404,18 @@ class LetterboxdSessionProvider:
         from .browser_fallback import BrowserLetterboxdClient
 
         return BrowserLetterboxdClient()
+
+
+def cookie_file() -> Path:
+    """Path of the persisted cookie bundle.
+
+    Resolved per call rather than at import time: ``load_dotenv()`` runs during
+    container bootstrap, so a module-level constant would capture the value from
+    before the .env file was read. BrowserLetterboxdClient resolves the same variable
+    when it writes, and the two must agree or the browser stores cookies the HTTP
+    client never finds.
+    """
+    return resolve_data_path(os.getenv("LETTERBOXD_SESSION_FILE", DEFAULT_COOKIE_FILE))
 
 
 def _configured_impersonation_profiles() -> tuple[str, ...]:
