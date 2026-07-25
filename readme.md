@@ -34,10 +34,6 @@ The write path is deliberate about two things:
   (against Xvfb in Docker) once, to mint the `cf_clearance` cookie. That session is persisted and
   reused, so a normal rating is a plain HTTP POST that takes a second or two with no browser launch.
 
-**What it is not:** it is not a Letterboxd API client (there is no public write API), not a
-multi-user service — it tracks one Plex user and posts to one Discord channel — and it handles
-films only, not TV.
-
 ## Features
 
 - **Plex history monitoring** — polls `history()` every 15 minutes, filtered to your account, and
