@@ -64,49 +64,10 @@ The write path is deliberate about two things:
 
 ```mermaid
 flowchart LR
-    Plex["Plex<br/>history()"]
-
-    subgraph Discord["Discord"]
-        Bot["Plexboxd bot"]
-        Embed["Film embed<br/>+ Diary Entry button"]
-        Modal["Rating modal"]
-        Status["Button state<br/>queued · rated · retry"]
-        Bot --> Embed
-        Embed -->|open| Modal
-        Modal -->|show queued| Status
-        Status -->|edit message| Embed
-    end
-
-    subgraph DB["Durable state<br/>plexboxd.db"]
-        Events[("watch_events")]
-        Jobs[("rating_jobs")]
-        Results[("rating_results")]
-    end
-
-    subgraph Worker["Rating worker"]
-        Claim["Claim queued job"]
-        Match["Match film<br/>cache → TMDb → search"]
-        Claim --> Match
-    end
-
-    subgraph Letterboxd["Letterboxd"]
-        Write["POST /api/v0/<br/>production-log-entries"]
-        Diary["Diary entry"]
-        Verify{"Echoed fields<br/>match request?"}
-        Write -->|persist| Diary
-        Diary -->|echo response| Verify
-    end
-
-    Plex -->|poll every 15 min| Bot
-    Bot -->|persist watch| Events
-    Modal -->|enqueue| Jobs
-    Jobs -->|claim| Claim
-    Events -->|load event| Claim
-    Match --> Write
-    Verify -->|success| Results
-    Verify -->|failure| Failed["Job failed<br/>retry available"]
-    Results -->|success callback| Status
-    Failed -->|failure callback| Status
+    Plex["Plex"] -->|"watched"| Embed["Discord embed"]
+    Embed -->|"you rate it"| Queue[("Job queue")]
+    Queue -->|"worker claims"| Write["Letterboxd<br/>diary entry"]
+    Write -.->|"verified · button updates"| Embed
 ```
 
 1. **Detect.** Recently watched films (within 30 minutes, your account, not currently playing, not in
