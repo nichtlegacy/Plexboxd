@@ -43,7 +43,7 @@ class LetterboxdWriter:
         rating: float,
         liked: bool,
         rewatch: bool,
-        watched_on: date,
+        watched_on: date | datetime,
         letterboxd_lid: str | None = None,
         tags: tuple[str, ...] | list[str] = (),
         review: str = "",
@@ -161,8 +161,23 @@ def _entry_url(log_entry: dict) -> str | None:
     return None
 
 
-def _normalize_watched_on(watched_on: date, threshold_hour: int) -> date:
-    now = datetime.now()
-    if now.hour < threshold_hour and watched_on == now.date():
-        return (now - timedelta(days=1)).date()
+def _normalize_watched_on(watched_on: date | datetime, threshold_hour: int) -> date:
+    """Assign a late-night viewing to the day it started.
+
+    A film finished at 02:00 belongs to the previous evening in a diary, so anything
+    before DATE_THRESHOLD_HOUR shifts back a day.
+
+    The decision is made from the *viewing* time. It used to compare
+    ``datetime.now()`` — the moment the rating was submitted — against the watch date,
+    which made the result depend on when you happened to click: the same 01:00 viewing
+    landed on the previous day if rated immediately, but on the current day if rated that
+    afternoon. Only a datetime carries the hour, so a plain date is taken as-is.
+    """
+    if isinstance(watched_on, datetime):
+        # "Before 07:00" only means anything on a local clock, so convert an aware value
+        # to local time first. Plex reports naive local times, which are used as they are.
+        local = watched_on.astimezone() if watched_on.tzinfo is not None else watched_on
+        if local.hour < threshold_hour:
+            return (local - timedelta(days=1)).date()
+        return local.date()
     return watched_on

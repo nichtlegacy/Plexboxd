@@ -53,7 +53,8 @@ The write path is deliberate about two things:
   watch event, duplicate notifications suppressed across libraries
 - **Film match caching** — TMDb redirect first, search fallback, and the resolved Letterboxd LID is
   cached so repeat ratings skip lookup entirely
-- **Late-night date handling** — `DATE_THRESHOLD_HOUR` assigns a 03:00 finish to the previous day
+- **Late-night date handling** — `DATE_THRESHOLD_HOUR` assigns a 03:00 finish to the previous day,
+  judged on when you watched the film rather than when you rate it
 - **Library exclusion** — keep 4K or Kids libraries out of your notifications
 - **Live button state** — the button follows the job: `⏳ Sending to Letterboxd…`, `✅ Logged ★★★½`, or
   a red `🔁 Retry` on failure
@@ -249,7 +250,7 @@ Configuration error: PLEX_TOKEN is not set. Check your .env file (see .env.examp
 |---|---|---|
 | `LETTERBOXD_USERNAME` | — | Required |
 | `LETTERBOXD_PASSWORD` | — | Required |
-| `DATE_THRESHOLD_HOUR` | `7` | Watches finishing before this hour are logged as the previous day |
+| `DATE_THRESHOLD_HOUR` | `7` | Watches finishing before this hour (in `TZ`) are logged as the previous day; `0` disables the shift |
 
 ### Letterboxd runtime and Cloudflare
 

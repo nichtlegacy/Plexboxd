@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from plexboxd.domain.models import WatchEvent
 from plexboxd.integrations.letterboxd.matcher import (
@@ -227,3 +227,53 @@ def test_build_log_entry_payload_omits_empty_review() -> None:
     )
 
     assert "review" not in payload
+
+
+def test_late_night_viewing_counts_as_the_previous_day() -> None:
+    """A film finished at 02:00 belongs to the evening before in a diary."""
+    from plexboxd.integrations.letterboxd.writer import _normalize_watched_on
+
+    assert _normalize_watched_on(datetime(2026, 7, 26, 2, 0), 7) == date(2026, 7, 25)
+    assert _normalize_watched_on(datetime(2026, 7, 26, 6, 59), 7) == date(2026, 7, 25)
+
+
+def test_viewing_after_the_threshold_keeps_its_own_day() -> None:
+    from plexboxd.integrations.letterboxd.writer import _normalize_watched_on
+
+    assert _normalize_watched_on(datetime(2026, 7, 26, 7, 0), 7) == date(2026, 7, 26)
+    assert _normalize_watched_on(datetime(2026, 7, 26, 23, 30), 7) == date(2026, 7, 26)
+
+
+def test_diary_date_does_not_depend_on_when_you_rate() -> None:
+    """The decision used to read datetime.now(), so the same viewing drifted.
+
+    Rated at 01:10 it shifted back a day; rated the same afternoon it did not.
+    """
+    from plexboxd.integrations.letterboxd.writer import _normalize_watched_on
+
+    viewing = datetime(2026, 7, 26, 1, 0)
+    # Same input, no reference to the current time anywhere in the call.
+    assert _normalize_watched_on(viewing, 7) == date(2026, 7, 25)
+    assert _normalize_watched_on(viewing, 7) == _normalize_watched_on(viewing, 7)
+
+
+def test_threshold_of_zero_disables_the_shift() -> None:
+    from plexboxd.integrations.letterboxd.writer import _normalize_watched_on
+
+    assert _normalize_watched_on(datetime(2026, 7, 26, 0, 30), 0) == date(2026, 7, 26)
+
+
+def test_aware_datetimes_are_read_on_the_local_clock() -> None:
+    """"Before 07:00" is only meaningful in local time."""
+    from plexboxd.integrations.letterboxd.writer import _normalize_watched_on
+
+    # 23:00 UTC is 01:00 the next day in UTC+2 — a late-night viewing there.
+    aware = datetime(2026, 7, 25, 23, 0, tzinfo=timezone(timedelta(hours=2))) 
+    assert _normalize_watched_on(aware, 7) == date(2026, 7, 25)
+
+
+def test_a_plain_date_is_taken_as_given() -> None:
+    """Without an hour there is nothing to decide, so it must not shift blindly."""
+    from plexboxd.integrations.letterboxd.writer import _normalize_watched_on
+
+    assert _normalize_watched_on(date(2026, 7, 26), 7) == date(2026, 7, 26)

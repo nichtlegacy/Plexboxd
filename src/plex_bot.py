@@ -67,7 +67,7 @@ LETTERBOXD_LOGO = "https://i.imgur.com/0Yd2L4i.png"
 EMBED_AUTHOR_NAME = "Plex Movie Notification 🎬"
 EMBED_FOOTER_TEXT = "Watched"
 
-CURRENT_VERSION = "1.3.0"
+CURRENT_VERSION = "1.3.1"
 
 # Anchored to the project root, so these stay correct whatever the working directory is.
 # Pre-1.1 installations stored watch history in the JSON file; it is migrated into

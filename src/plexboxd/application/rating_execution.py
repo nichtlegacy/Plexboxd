@@ -51,7 +51,9 @@ class RatingExecutionService:
                 rating=job.requested_rating,
                 liked=job.requested_liked,
                 rewatch=job.requested_rewatch,
-                watched_on=event.watched_at.date(),
+                # The full datetime, not just the date: the writer needs the hour to
+                # decide whether a late-night viewing belongs to the previous day.
+                watched_on=event.watched_at,
                 tags=job.requested_tags,
                 review=job.requested_review,
             )
