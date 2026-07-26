@@ -3,6 +3,7 @@
 # Plexboxd
 
 **Rate the film you just watched on Plex from Discord — and have it land in your Letterboxd diary.**
+<br>
 Self-hosted Discord bot, SQLite job queue, no Letterboxd API key required.
 
 [![Release](https://img.shields.io/github/v/release/nichtlegacy/plexboxd?style=flat-square)](https://github.com/nichtlegacy/plexboxd/releases/latest)
