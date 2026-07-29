@@ -126,7 +126,7 @@ and mounts `./data` and `./logs`.
 A healthy first start logs roughly this, in order:
 
 ```
-Running version: v1.3.0 | Latest Version: v1.3.0
+Running version: v1.3.2 | Latest Version: v1.3.2
 Attempting Plex connection 1/7...
 Plex connection established
 Bot started as: YourBot#1234
