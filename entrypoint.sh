@@ -7,13 +7,21 @@ set -euo pipefail
 DISPLAY_NUM="${PLEXBOXD_DISPLAY_NUM:-99}"
 export DISPLAY=":${DISPLAY_NUM}"
 
+# A previous container stop can leave Xvfb's socket and lock behind. Only remove
+# them when the configured display is not reachable; never disturb a live server.
+if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+    rm -f -- \
+        "/tmp/.X11-unix/X${DISPLAY_NUM}" \
+        "/tmp/.X${DISPLAY_NUM}-lock"
+fi
+
 Xvfb "$DISPLAY" -screen 0 1920x1080x24 -nolisten tcp &
 XVFB_PID=$!
 
 cleanup() {
     kill "$XVFB_PID" 2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
 
 # Poll for readiness instead of a fixed sleep: on a loaded host Xvfb can take longer than
 # a second, and starting Chromium against a display that is not up yet fails the login.
