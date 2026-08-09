@@ -5,6 +5,26 @@ import datetime
 import time
 
 
+def _retry_after_seconds(response):
+    """Return Discord's retry delay in seconds without mistaking milliseconds for seconds."""
+    retry_after = None
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            retry_after = payload.get("retry_after")
+    except (ValueError, requests.RequestException):
+        pass
+
+    if retry_after is None:
+        retry_after = response.headers.get("Retry-After", 5)
+        retry_after = float(retry_after)
+        # Discord may return this header in milliseconds (for example 1680).
+        if retry_after > 60:
+            retry_after /= 1000
+
+    return max(0.0, min(float(retry_after), 60.0))
+
+
 class DiscordHandler(logging.Handler):
     """Custom handler to send logs to a Discord webhook."""
     def __init__(self, webhook_url, bot_name="Plexboxd Logging Bot", title_prefix="Plexboxd Monitor", max_retries=3):
@@ -50,7 +70,7 @@ class DiscordHandler(logging.Handler):
                 if response.status_code == 204:
                     return
                 elif response.status_code == 429:
-                    retry_after = int(response.headers.get("Retry-After", 5))
+                    retry_after = _retry_after_seconds(response)
                     self.fallback_logger.warning(f"Rate limit hit, waiting {retry_after} seconds...")
                     time.sleep(retry_after)
                 else:

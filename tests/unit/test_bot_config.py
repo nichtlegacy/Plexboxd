@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import asyncio
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -116,3 +118,21 @@ def test_file_handler_rotates_on_the_logged_clock(monkeypatch, tmp_path) -> None
     ]
     assert handlers
     assert all(handler.utc is False for handler in handlers)
+
+
+def test_plex_outage_waits_for_next_loop_instead_of_restarting(monkeypatch, caplog) -> None:
+    import requests
+
+    module = _load_plex_bot(monkeypatch, dict(REQUIRED_ENV))
+
+    class OfflinePlex:
+        def history(self, **_kwargs):
+            raise requests.ConnectionError("connection refused")
+
+    monitor = SimpleNamespace(plex=OfflinePlex())
+    bot = SimpleNamespace(notify_channel=object(), plex_monitor=monitor)
+
+    asyncio.run(module.PlexDiscordBot.check_recently_watched.coro(bot))
+
+    assert monitor.plex is None
+    assert "retrying next interval" in caplog.text

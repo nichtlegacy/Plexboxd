@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -9,6 +10,29 @@ from types import SimpleNamespace
 from plexboxd.integrations.letterboxd import browser_fallback
 from plexboxd.integrations.letterboxd.session import CloudflareChallengeError
 from plexboxd.integrations.letterboxd.writer import LetterboxdWriter
+
+
+def test_browser_navigation_retries_err_aborted_once() -> None:
+    script_path = Path(__file__).parents[2] / "src/plexboxd/integrations/letterboxd/scripts/letterboxd_browser.cjs"
+    program = f"""
+const {{ gotoWithRetry }} = require({json.dumps(str(script_path))});
+let calls = 0;
+const page = {{
+  goto: async () => {{
+    calls += 1;
+    if (calls === 1) throw new Error('page.goto: net::ERR_ABORTED');
+    return 'ok';
+  }},
+  waitForTimeout: async () => {{}},
+}};
+gotoWithRetry(page, 'https://letterboxd.com/activity/').then(() => {{
+  if (calls !== 2) process.exit(1);
+}}).catch(() => process.exit(2));
+"""
+
+    completed = subprocess.run(["node", "-e", program], check=False)
+
+    assert completed.returncode == 0
 
 
 def test_browser_client_bootstrap_uses_xvfb_and_persists_cookies(monkeypatch, tmp_path) -> None:

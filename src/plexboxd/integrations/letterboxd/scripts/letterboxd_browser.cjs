@@ -162,6 +162,19 @@ async function assertNoChallenge(page) {
   }
 }
 
+async function gotoWithRetry(page, url) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await page.goto(url, { waitUntil: 'domcontentloaded' });
+    } catch (error) {
+      if (attempt > 0 || !String(error).includes('net::ERR_ABORTED')) {
+        throw error;
+      }
+      await page.waitForTimeout(500);
+    }
+  }
+}
+
 async function extractCookies(context) {
   return context.cookies('https://letterboxd.com');
 }
@@ -244,7 +257,7 @@ async function openSignInForm(page) {
 
   // /sign-in/ renders the form inline on the homepage; navigate rather than click so a
   // stray overlay cannot block the flow.
-  await page.goto('https://letterboxd.com/sign-in/', { waitUntil: 'domcontentloaded' });
+  await gotoWithRetry(page, 'https://letterboxd.com/sign-in/');
   await page.waitForTimeout(1500);
   await dismissConsentDialog(page);
 
@@ -277,7 +290,7 @@ async function waitForSignedInCookie(context, timeoutMs) {
 }
 
 async function ensureLoggedIn(page, context, args) {
-  await page.goto('https://letterboxd.com/activity/', { waitUntil: 'domcontentloaded' });
+  await gotoWithRetry(page, 'https://letterboxd.com/activity/');
   await assertNoChallenge(page);
   if (await isLoggedIn(page, context)) {
     return;
@@ -287,7 +300,7 @@ async function ensureLoggedIn(page, context, args) {
     throw new Error('Letterboxd credentials are required for browser login');
   }
 
-  await page.goto('https://letterboxd.com/', { waitUntil: 'domcontentloaded' });
+  await gotoWithRetry(page, 'https://letterboxd.com/');
   await assertNoChallenge(page);
   await openSignInForm(page);
 
@@ -303,7 +316,7 @@ async function ensureLoggedIn(page, context, args) {
   await waitForSignedInCookie(context, 30000);
   await assertNoChallenge(page);
 
-  await page.goto('https://letterboxd.com/activity/', { waitUntil: 'domcontentloaded' });
+  await gotoWithRetry(page, 'https://letterboxd.com/activity/');
   await assertNoChallenge(page);
   if (!(await isLoggedIn(page, context))) {
     const html = await page.content();
@@ -318,7 +331,7 @@ async function ensureLoggedIn(page, context, args) {
 }
 
 async function handleVerify(page, context) {
-  await page.goto('https://letterboxd.com/activity/', { waitUntil: 'domcontentloaded' });
+  await gotoWithRetry(page, 'https://letterboxd.com/activity/');
   await assertNoChallenge(page);
   if (!(await isLoggedIn(page, context))) {
     throw new Error('Persisted browser profile is not logged in');
@@ -359,7 +372,7 @@ async function handleWrite(page, context, args) {
 
   // Load the film page first: it sets the referer the API expects and gives us the LID.
   const slug = args.slug;
-  await page.goto(`https://letterboxd.com/film/${slug}/`, { waitUntil: 'domcontentloaded' });
+  await gotoWithRetry(page, `https://letterboxd.com/film/${slug}/`);
   await assertNoChallenge(page);
 
   if (!args.lid) {
@@ -443,8 +456,12 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  const message = String(error && error.stack ? error.stack : error);
-  console.error(message);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    const message = String(error && error.stack ? error.stack : error);
+    console.error(message);
+    process.exit(1);
+  });
+}
+
+module.exports = { gotoWithRetry };

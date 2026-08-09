@@ -866,12 +866,13 @@ class PlexDiscordBot(commands.Bot):
                     logger.error(f"Error processing movie {getattr(movie, 'title', 'Unknown')}: {str(e)}")
                     continue
 
+        except requests.RequestException as e:
+            # The loop schedules its next run itself. Restarting it here created a tight
+            # reconnect loop and flooded Discord whenever Plex was briefly offline.
+            self.plex_monitor.plex = None
+            logger.warning(f"Plex unavailable during recently-watched check; retrying next interval: {e}")
         except Exception as e:
             logger.error(f"Error in check_recently_watched task: {str(e)}")
-            try:
-                self.check_recently_watched.restart()
-            except Exception as restart_error:
-                logger.error(f"Failed to restart check_recently_watched task: {str(restart_error)}")
 
     async def create_movie_embed(self, movie_details: Dict):
         """Create Discord embed for movie notification (placeholder, moved to utils)."""
